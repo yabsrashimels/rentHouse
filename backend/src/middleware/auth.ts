@@ -124,10 +124,5 @@ export const requireOwnerOrAdmin = (req: AuthRequest, res: Response, next: NextF
   if (!req.user) {
     return next(new ApiError(401, 'Authentication required'));
   }
-
-  if (req.user.role !== 'OWNER' && req.user.role !== 'ADMIN') {
-    return next(new ApiError(403, 'Only property owners can perform this action'));
-  }
-
   next();
 };

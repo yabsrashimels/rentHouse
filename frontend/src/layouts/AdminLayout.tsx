@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Boxes,
   ClipboardList,
@@ -6,7 +6,8 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
-  Users,
+  MessageSquare,
+  Users
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 
@@ -14,6 +15,7 @@ const navigation = [
   { label: 'Overview', path: '/admin', icon: LayoutDashboard, end: true },
   { label: 'Properties', path: '/admin/properties', icon: Boxes },
   { label: 'Payments', path: '/admin/payments', icon: CreditCard },
+  { label: 'Rental requests', path: '/admin/rental-requests', icon: MessageSquare },
   { label: 'Users', path: '/admin/users', icon: Users },
   { label: 'Packages', path: '/admin/packages', icon: Package },
   { label: 'Audit logs', path: '/admin/audit-logs', icon: ClipboardList },
@@ -33,7 +35,7 @@ export default function AdminLayout() {
       <aside className="flex w-full flex-col border-b border-gray-200 bg-white md:min-h-screen md:w-64 md:border-b-0 md:border-r">
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 md:block md:px-6 md:py-6">
           <div>
-            <p className="text-lg font-bold text-primary-800">EthioRent</p>
+            <a href='/'><p className="text-lg font-bold text-primary-800">EthioRent</p></a>
             <p className="mt-0.5 text-xs font-medium uppercase tracking-wide text-secondary-text">Administration</p>
           </div>
           <p className="text-sm font-medium text-secondary-text md:hidden">{user?.fullName}</p>

@@ -4,6 +4,18 @@ import { ApiError } from '../utils/ApiError';
 import { sendSuccess } from '../utils/response';
 import { AuthRequest } from '../middleware/auth';
 import { cloudinary } from '../config/cloudinary';
+import { randomUUID } from 'crypto';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
+import { emitToAdmins, emitToUser } from '../realtime';
+
+const receiptStorageDirectory = process.env.RECEIPT_STORAGE_DIR || path.join(process.cwd(), 'private_uploads', 'receipts');
+const receiptFileTypes: Record<string, { extension: string; contentType: string }> = {
+  'image/jpeg': { extension: '.jpg', contentType: 'image/jpeg' },
+  'image/png': { extension: '.png', contentType: 'image/png' },
+  'image/webp': { extension: '.webp', contentType: 'image/webp' },
+  'application/pdf': { extension: '.pdf', contentType: 'application/pdf' },
+};
 
 export const getPackages = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -27,9 +39,17 @@ export const createPayment = async (req: AuthRequest, res: Response, next: NextF
     if (property.ownerId !== req.user!.id) {
       throw new ApiError(403, 'You can only pay for your own properties');
     }
+    if (!['DRAFT', 'AWAITING_PAYMENT'].includes(property.listingStatus)) {
+      throw new ApiError(409, 'This listing is not eligible for a new advertising payment');
+    }
 
     const pkg = await prisma.listingPackage.findUnique({ where: { id: packageId } });
     if (!pkg || !pkg.active) throw new ApiError(404, 'Package not found or unavailable');
+
+    const imageCount = await prisma.propertyImage.count({ where: { propertyId } });
+    if (imageCount > pkg.maximumPhotos) {
+      throw new ApiError(409, `This listing has ${imageCount} photos. Choose a package that allows at least ${imageCount} photos.`);
+    }
 
     // Check for existing active/pending payment
     const existingPayment = await prisma.payment.findFirst({
@@ -43,22 +63,19 @@ export const createPayment = async (req: AuthRequest, res: Response, next: NextF
       throw new ApiError(409, 'A payment already exists for this property');
     }
 
-    const payment = await prisma.payment.create({
-      data: {
-        userId: req.user!.id,
-        propertyId,
-        packageId,
-        amountInETB: pkg.priceInETB,
-        paymentStatus: 'PENDING',
-        ipAddress: req.ip,
-      },
-      include: { package: true },
-    });
-
-    // Update property status
-    await prisma.property.update({
-      where: { id: propertyId },
-      data: { listingStatus: 'AWAITING_PAYMENT' },
+    const payment = await prisma.$transaction(async tx => {
+      await tx.property.update({ where: { id: propertyId }, data: { listingStatus: 'AWAITING_PAYMENT' } });
+      return tx.payment.create({
+        data: {
+          userId: req.user!.id,
+          propertyId,
+          packageId,
+          amountInETB: pkg.priceInETB,
+          paymentStatus: 'PENDING',
+          ipAddress: req.ip,
+        },
+        include: { package: true },
+      });
     });
 
     sendSuccess(res, payment, 'Payment record created', 201);
@@ -72,6 +89,11 @@ export const submitPaymentEvidence = async (req: AuthRequest, res: Response, nex
     const { id } = req.params;
     const { transactionReference, paymentMethod } = req.body;
 
+    if (!['TELEBIRR', 'CBE'].includes(paymentMethod)) throw new ApiError(400, 'Choose Telebirr or CBE');
+    if (typeof transactionReference !== 'string' || transactionReference.trim().length < 3 || transactionReference.trim().length > 120) {
+      throw new ApiError(400, 'A valid transaction reference is required');
+    }
+
     const payment = await prisma.payment.findUnique({
       where: { id },
       include: { property: true },
@@ -82,50 +104,70 @@ export const submitPaymentEvidence = async (req: AuthRequest, res: Response, nex
     if (!['PENDING', 'REJECTED'].includes(payment.paymentStatus)) {
       throw new ApiError(400, 'This payment cannot be updated');
     }
+    if (!['AWAITING_PAYMENT', 'PAYMENT_UNDER_REVIEW'].includes(payment.property.listingStatus)) {
+      throw new ApiError(409, 'This listing is not eligible for payment evidence');
+    }
 
     let receiptUrl: string | undefined;
     let receiptStorageKey: string | undefined;
 
-    // Upload receipt if provided
     if (req.file) {
-      if (!req.file.mimetype.startsWith('image/') && req.file.mimetype !== 'application/pdf') {
-        throw new ApiError(400, 'Receipt must be an image or PDF');
+      const fileType = receiptFileTypes[req.file.mimetype];
+      if (!fileType) throw new ApiError(400, 'Receipt must be a JPG, PNG, WebP image, or PDF');
+
+      try {
+        const result = await new Promise<any>((resolve, reject) => {
+          cloudinary.uploader.upload_stream(
+            {
+              folder: 'ethiorent/receipts',
+              resource_type: 'auto',
+              access_mode: 'private',
+            },
+            (error, uploaded) => error ? reject(error) : resolve(uploaded)
+          ).end(req.file!.buffer);
+        });
+        receiptUrl = result.secure_url;
+        receiptStorageKey = result.public_id;
+      } catch (error: any) {
+        const filename = `${randomUUID()}${fileType.extension}`;
+        await mkdir(receiptStorageDirectory, { recursive: true });
+        await writeFile(path.join(receiptStorageDirectory, filename), req.file.buffer, { flag: 'wx', mode: 0o600 });
+        receiptUrl = 'local://private-receipt';
+        receiptStorageKey = `local:${filename}`;
+        console.warn('Receipt stored on private local disk because Cloudinary upload failed:', error.http_code || error.name || 'upload error');
       }
-
-      const result = await new Promise<any>((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          {
-            folder: `ethiorent/receipts`,
-            resource_type: 'auto',
-            access_mode: 'private', // Restrict access
-          },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-          }
-        ).end(req.file!.buffer);
-      });
-
-      receiptUrl = result.secure_url;
-      receiptStorageKey = result.public_id;
     }
 
-    const updated = await prisma.payment.update({
-      where: { id },
-      data: {
-        transactionReference,
-        paymentMethod,
-        receiptUrl: receiptUrl || payment.receiptUrl,
-        receiptStorageKey: receiptStorageKey || payment.receiptStorageKey,
-        paymentStatus: 'SUBMITTED',
-      },
+    if (!req.file || !receiptStorageKey) {
+      throw new ApiError(400, 'Upload a payment screenshot or receipt with the transaction reference');
+    }
+
+    const updated = await prisma.$transaction(async tx => {
+      const changed = await tx.payment.updateMany({
+        where: { id, userId: req.user!.id, paymentStatus: { in: ['PENDING', 'REJECTED'] } },
+        data: {
+          transactionReference: transactionReference.trim(),
+          paymentMethod,
+          receiptUrl: receiptUrl || payment.receiptUrl,
+          receiptStorageKey: receiptStorageKey || payment.receiptStorageKey,
+          paymentStatus: 'SUBMITTED',
+          rejectionReason: null,
+          verifiedById: null,
+          verifiedAt: null,
+        },
+      });
+      if (changed.count !== 1) throw new ApiError(409, 'This payment can no longer be submitted');
+      const propertyTransition = await tx.property.updateMany({
+        where: { id: payment.propertyId, listingStatus: { in: ['AWAITING_PAYMENT', 'PAYMENT_UNDER_REVIEW'] } },
+        data: { listingStatus: 'PAYMENT_UNDER_REVIEW' },
+      });
+      if (propertyTransition.count !== 1) throw new ApiError(409, 'This listing is no longer eligible for payment review');
+      return tx.payment.findUniqueOrThrow({ where: { id } });
     });
 
-    // Update property status
-    await prisma.property.update({
-      where: { id: payment.propertyId },
-      data: { listingStatus: 'PAYMENT_UNDER_REVIEW' },
-    });
+    const paymentEvent = { paymentId: id, propertyId: payment.propertyId, status: updated.paymentStatus };
+    emitToAdmins('payment:created', paymentEvent);
+    emitToUser(req.user!.id, 'payment:updated', paymentEvent);
 
     // Create notification
     await prisma.notification.create({
@@ -157,6 +199,234 @@ export const getMyPayments = async (req: AuthRequest, res: Response, next: NextF
     });
 
     sendSuccess(res, payments);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getReviewablePayment = async (id: string, req: AuthRequest) => {
+  const payment = await prisma.payment.findUnique({
+    where: { id },
+    include: { property: true, package: true },
+  });
+
+  if (!payment) throw new ApiError(404, 'Payment not found');
+
+  // SECURITY: Only ADMIN can accept or reject payments. No self-approval.
+  if (req.user!.role !== 'ADMIN') {
+    throw new ApiError(403, 'Only administrators can accept or reject payments');
+  }
+
+  if (payment.userId !== payment.property.ownerId) {
+    throw new ApiError(409, 'Payment owner does not match the property owner');
+  }
+  if (payment.property.listingStatus !== 'PAYMENT_UNDER_REVIEW') {
+    throw new ApiError(409, 'This listing is not eligible for payment publication');
+  }
+  if (!['SUBMITTED', 'UNDER_REVIEW'].includes(payment.paymentStatus)) {
+    throw new ApiError(409, 'Only submitted payment evidence can be reviewed');
+  }
+  if (!payment.transactionReference?.trim() && !payment.receiptStorageKey) {
+    throw new ApiError(400, 'Payment must include a transaction reference or receipt before review');
+  }
+
+  return payment;
+};
+
+export const acceptPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const payment = await getReviewablePayment(req.params.id, req);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + payment.package.durationDays * 24 * 60 * 60 * 1000);
+    const { notes } = req.body as { notes?: string };
+
+    await prisma.$transaction(async (tx) => {
+      const decision = await tx.payment.updateMany({
+        where: { id: payment.id, paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW'] } },
+        data: {
+          paymentStatus: 'VERIFIED',
+          verifiedById: req.user!.id,
+          verifiedAt: now,
+          notes: notes?.trim() || null,
+        },
+      });
+      if (decision.count !== 1) throw new ApiError(409, 'This payment has already been reviewed');
+
+      await tx.paymentVerificationHistory.create({
+        data: { paymentId: payment.id, adminId: req.user!.id, action: 'VERIFIED', reason: notes?.trim() || null },
+      });
+      await tx.property.update({
+        where: { id: payment.propertyId, listingStatus: 'PAYMENT_UNDER_REVIEW' },
+        data: {
+          listingStatus: 'PUBLISHED',
+          publishedAt: now,
+          expiresAt,
+          featuredUntil: payment.package.featuredPlacement ? expiresAt : null,
+        },
+      });
+      await tx.notification.create({
+        data: {
+          userId: payment.userId,
+          type: 'LISTING_PUBLISHED',
+          title: 'Payment accepted — your listing is now live',
+          message: `Your payment for "${payment.property.title}" was accepted and the listing is now published.`,
+          data: { paymentId: payment.id, propertyId: payment.propertyId },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user!.id,
+          adminId: req.user!.role === 'ADMIN' ? req.user!.id : null,
+          action: 'PAYMENT_VERIFIED_AND_LISTING_PUBLISHED',
+          entityType: 'Payment',
+          entityId: payment.id,
+          relevantMetadata: { propertyId: payment.propertyId, amount: payment.amountInETB.toString() },
+          ipAddress: req.ip,
+        },
+      });
+    });
+
+    const paymentEvent = { paymentId: payment.id, propertyId: payment.propertyId, status: 'VERIFIED' };
+    emitToAdmins('payment:updated', paymentEvent);
+    emitToUser(payment.userId, 'payment:updated', paymentEvent);
+    emitToUser(payment.userId, 'listing:updated', paymentEvent);
+
+    sendSuccess(res, { paymentStatus: 'VERIFIED', propertyId: payment.propertyId }, 'Payment accepted and listing published');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const rejectPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) throw new ApiError(400, 'Rejection reason is required');
+
+    const payment = await getReviewablePayment(req.params.id, req);
+    await prisma.$transaction(async (tx) => {
+      const decision = await tx.payment.updateMany({
+        where: { id: payment.id, paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW'] } },
+        data: { paymentStatus: 'REJECTED', rejectionReason: reason, verifiedById: req.user!.id, verifiedAt: new Date() },
+      });
+      if (decision.count !== 1) throw new ApiError(409, 'This payment has already been reviewed');
+
+      await tx.paymentVerificationHistory.create({
+        data: { paymentId: payment.id, adminId: req.user!.id, action: 'REJECTED', reason },
+      });
+      await tx.property.updateMany({
+        where: { id: payment.propertyId, listingStatus: { in: ['PAYMENT_UNDER_REVIEW', 'AWAITING_PAYMENT', 'REJECTED', 'DRAFT'] } },
+        data: { listingStatus: 'AWAITING_PAYMENT' },
+      });
+      await tx.notification.create({
+        data: {
+          userId: payment.userId,
+          type: 'PAYMENT_REJECTED',
+          title: 'Payment rejected',
+          message: `Your payment for "${payment.property.title}" was rejected. Reason: ${reason}. Please resubmit corrected evidence.`,
+          data: { paymentId: payment.id, propertyId: payment.propertyId, reason },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user!.id,
+          adminId: req.user!.role === 'ADMIN' ? req.user!.id : null,
+          action: 'PAYMENT_REJECTED',
+          entityType: 'Payment',
+          entityId: payment.id,
+          relevantMetadata: { reason, propertyId: payment.propertyId },
+          ipAddress: req.ip,
+        },
+      });
+    });
+
+    const paymentEvent = { paymentId: payment.id, propertyId: payment.propertyId, status: 'REJECTED' };
+    emitToAdmins('payment:updated', paymentEvent);
+    emitToUser(payment.userId, 'payment:updated', paymentEvent);
+    emitToUser(payment.userId, 'listing:updated', paymentEvent);
+
+    sendSuccess(res, { paymentStatus: 'REJECTED', propertyId: payment.propertyId }, 'Payment rejected');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getPaymentReceipt = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const payment = await prisma.payment.findUnique({
+      where: { id: req.params.id },
+      select: {
+        userId: true,
+        receiptStorageKey: true,
+        receiptUrl: true,
+        property: { select: { ownerId: true } },
+      },
+    });
+
+    if (!payment) throw new ApiError(404, 'Payment not found');
+    if (req.user!.role !== 'ADMIN' && payment.property.ownerId !== req.user!.id) {
+      throw new ApiError(403, 'You can only view receipts for your own properties');
+    }
+    if (!payment.receiptStorageKey || !payment.receiptUrl) throw new ApiError(404, 'Receipt not found');
+
+    if (payment.receiptStorageKey.startsWith('local:')) {
+      sendSuccess(res, { local: true });
+      return;
+    }
+
+    const resourceType = payment.receiptUrl.includes('/raw/upload/') ? 'raw' : 'image';
+    const fileName = payment.receiptUrl.split('?')[0].split('/').pop() || '';
+    const format = fileName.includes('.') ? fileName.split('.').pop()! : 'jpg';
+    const signedUrl = cloudinary.utils.private_download_url(payment.receiptStorageKey, format, {
+      resource_type: resourceType,
+      type: 'private',
+      expires_at: Math.floor(Date.now() / 1000) + 300,
+    });
+    sendSuccess(res, { url: signedUrl });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getLocalPaymentReceipt = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const payment = await prisma.payment.findUnique({
+      where: { id: req.params.id },
+      select: {
+        receiptStorageKey: true,
+        property: { select: { ownerId: true } },
+      },
+    });
+
+    if (!payment) throw new ApiError(404, 'Payment not found');
+    if (req.user!.role !== 'ADMIN' && payment.property.ownerId !== req.user!.id) {
+      throw new ApiError(403, 'You can only view receipts for your own properties');
+    }
+
+    const filename = payment.receiptStorageKey?.startsWith('local:')
+      ? payment.receiptStorageKey.slice('local:'.length)
+      : '';
+    if (!/^[0-9a-f-]{36}\.(jpg|png|webp|pdf)$/i.test(filename)) {
+      throw new ApiError(404, 'Local receipt not found');
+    }
+
+    let file: Buffer;
+    try {
+      file = await readFile(path.join(receiptStorageDirectory, filename));
+    } catch (error: any) {
+      if (error.code === 'ENOENT') throw new ApiError(404, 'Receipt file not found on this server');
+      throw error;
+    }
+
+    const extension = path.extname(filename).toLowerCase();
+    const contentType = Object.values(receiptFileTypes).find(type => type.extension === extension)?.contentType;
+    if (!contentType) throw new ApiError(404, 'Unsupported receipt file');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', file.length);
+    res.setHeader('Content-Disposition', `inline; filename="receipt${extension}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(file);
   } catch (error) {
     next(error);
   }
@@ -203,7 +473,7 @@ export const getOwnerProperties = async (req: AuthRequest, res: Response, next: 
     const properties = await prisma.property.findMany({
       where: { ownerId: req.user!.id },
       include: {
-        images: { where: { isCover: true }, take: 1 },
+        images: { orderBy: { displayOrder: 'asc' } },
         payments: {
           orderBy: { createdAt: 'desc' },
           take: 1,

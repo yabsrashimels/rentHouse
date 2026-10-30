@@ -6,6 +6,7 @@ export interface Property {
   description: string
   propertyType: string
   monthlyRent: number
+  contactPhone: string
   bedrooms: number
   bathrooms: number
   sizeSquareMeters?: number

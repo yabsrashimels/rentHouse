@@ -1,7 +1,9 @@
 import app from './app';
+import { createServer } from 'http';
 import config from './config';
 import prisma from './config/database';
 import cron from 'node-cron';
+import { initializeRealtime } from './realtime';
 
 const PORT = config.port;
 
@@ -109,7 +111,9 @@ async function start() {
     await prisma.$connect();
     console.log('✅ Database connected successfully');
 
-    const server = app.listen(PORT, () => {
+    const server = createServer(app);
+    initializeRealtime(server);
+    server.listen(PORT, () => {
       console.log(`🚀 EthioRent API server running on port ${PORT}`);
       console.log(`📊 Environment: ${config.nodeEnv}`);
       console.log(`🌐 Frontend URL: ${config.frontendUrl}`);

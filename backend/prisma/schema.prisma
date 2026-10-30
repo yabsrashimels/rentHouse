@@ -67,6 +67,13 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum RentalRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
 enum ReportReason {
   FAKE_PROPERTY
   INCORRECT_PRICE
@@ -95,6 +102,8 @@ enum NotificationType {
   LISTING_EXPIRING_SOON
   LISTING_EXPIRED
   LISTING_RENEWED
+  RENTAL_REQUEST_RECEIVED
+  RENTAL_REQUEST_UPDATED
   SYSTEM_MESSAGE
 }
 
@@ -126,6 +135,7 @@ model User {
 
   // Relations
   properties          Property[]
+  rentalRequests      RentalRequest[]   @relation("RentalRequester")
   payments            Payment[]
   verifiedPayments    Payment[]         @relation("PaymentVerifier")
   favorites           Favorite[]
@@ -151,6 +161,7 @@ model Property {
   description           String
   propertyType          PropertyType
   monthlyRent           Decimal        @db.Decimal(12, 2)
+  contactPhone          String
   bedrooms              Int
   bathrooms             Int
   sizeSquareMeters      Decimal?       @db.Decimal(10, 2)
@@ -179,6 +190,7 @@ model Property {
   owner                 User           @relation(fields: [ownerId], references: [id])
   images                PropertyImage[]
   payments              Payment[]
+  rentalRequests        RentalRequest[]
   favorites             Favorite[]
   reports               ListingReport[]
 
@@ -278,6 +290,24 @@ model PaymentVerificationHistory {
   payment     Payment       @relation(fields: [paymentId], references: [id])
 
   @@index([paymentId])
+}
+
+model RentalRequest {
+  id              String              @id @default(cuid())
+  propertyId      String
+  renterId        String
+  message         String
+  status          RentalRequestStatus @default(PENDING)
+  responseMessage String?
+  reviewedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  property        Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  renter          User                @relation("RentalRequester", fields: [renterId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, status])
+  @@index([renterId, createdAt])
 }
 
 model Favorite {

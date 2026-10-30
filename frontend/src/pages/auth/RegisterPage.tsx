@@ -10,9 +10,13 @@ import { useAuth } from '../../context/AuthContext'
 const schema = z.object({
 	fullName: z.string().trim().min(2, 'Enter your name').max(100),
 	email: z.string().trim().email('Enter a valid email address'),
-	phone: z.string().trim().min(7, 'Enter a valid phone number').max(20),
+	phone: z.string().trim().min(9, 'Enter a valid phone number').max(15, 'Phone number must be 15 characters or fewer'),
 	role: z.enum(['TENANT', 'OWNER']),
-	password: z.string().min(8, 'Use at least 8 characters').max(100),
+	password: z.string()
+		.min(8, 'Use at least 8 characters')
+		.max(100)
+		.regex(/[A-Z]/, 'Include at least one uppercase letter')
+		.regex(/[0-9]/, 'Include at least one number'),
 	confirmPassword: z.string(),
 }).refine(value => value.password === value.confirmPassword, { path: ['confirmPassword'], message: 'Passwords do not match' })
 type RegisterValues = z.infer<typeof schema>
@@ -30,7 +34,7 @@ export default function RegisterPage() {
 			await createAccount({ fullName: values.fullName, email: values.email, phone: values.phone, password: values.password, role: values.role })
 			const redirect = params.get('redirect')
 			navigate(redirect?.startsWith('/') && !redirect.startsWith('//') ? redirect : values.role === 'OWNER' ? '/dashboard' : '/', { replace: true })
-		} catch (error: any) { toast.error(error.response?.data?.message || 'Unable to create your account') }
+		} catch (error: any) { toast.error(error.response?.data?.errors?.[0]?.message || error.response?.data?.message || 'Unable to create your account') }
 		finally { setSubmitting(false) }
 	}
 

@@ -4,9 +4,20 @@ import prisma from '../config/database';
 import { ApiError } from '../utils/ApiError';
 import { sendSuccess, sendPaginatedSuccess } from '../utils/response';
 import { AuthRequest } from '../middleware/auth';
+import { emitToUser } from '../realtime';
 import { paginateQuery, generateUniqueSlug } from '../utils/helpers';
 import { cloudinary } from '../config/cloudinary';
 import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
+import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
+import path from 'path';
+
+const propertyImageDirectory = process.env.PROPERTY_IMAGE_STORAGE_DIR || path.join(process.cwd(), 'private_uploads', 'properties');
+const imageFileTypes: Record<string, { extension: string; contentType: string }> = {
+  'image/jpeg': { extension: '.jpg', contentType: 'image/jpeg' },
+  'image/png': { extension: '.png', contentType: 'image/png' },
+  'image/webp': { extension: '.webp', contentType: 'image/webp' },
+};
 
 export const getProperties = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -274,10 +285,12 @@ export const createProperty = async (req: AuthRequest, res: Response, next: Next
       bedrooms, bathrooms, sizeSquareMeters, furnished,
       parkingAvailable, waterAvailable, electricityAvailable, amenities,
       region, city, neighborhood, address, approximateLatitude,
-      approximateLongitude, publicAddressEnabled,
+      approximateLongitude, publicAddressEnabled, contactPhone,
     } = req.body;
 
     const slug = await generateUniqueSlug(title, uuidv4().substring(0, 8));
+    const owner = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { phone: true } });
+    if (!owner) throw new ApiError(401, 'Authenticated user not found');
 
     const property = await prisma.property.create({
       data: {
@@ -285,6 +298,7 @@ export const createProperty = async (req: AuthRequest, res: Response, next: Next
         title, description,
         propertyType,
         monthlyRent: parseFloat(monthlyRent),
+        contactPhone: typeof contactPhone === 'string' && contactPhone.trim() ? contactPhone.trim() : owner.phone,
         bedrooms: parseInt(bedrooms),
         bathrooms: parseInt(bathrooms),
         sizeSquareMeters: sizeSquareMeters ? parseFloat(sizeSquareMeters) : null,
@@ -314,6 +328,8 @@ export const createProperty = async (req: AuthRequest, res: Response, next: Next
       },
     });
 
+    emitToUser(req.user!.id, 'listing:updated', { propertyId: property.id, status: property.listingStatus });
+
     sendSuccess(res, property, 'Property created successfully', 201);
   } catch (error) {
     next(error);
@@ -333,7 +349,7 @@ export const updateProperty = async (req: AuthRequest, res: Response, next: Next
     }
 
     // Owners can't edit published properties directly (must go through review)
-    const editableStatuses = ['DRAFT', 'AWAITING_PAYMENT', 'REJECTED'];
+    const editableStatuses = ['DRAFT', 'AWAITING_PAYMENT', 'PAYMENT_UNDER_REVIEW', 'REJECTED', 'PUBLISHED', 'EXPIRED'];
     if (req.user!.role !== 'ADMIN' && !editableStatuses.includes(property.listingStatus)) {
       throw new ApiError(400, 'This listing cannot be edited in its current status');
     }
@@ -344,7 +360,7 @@ export const updateProperty = async (req: AuthRequest, res: Response, next: Next
       'bathrooms', 'sizeSquareMeters', 'furnished', 'parkingAvailable',
       'waterAvailable', 'electricityAvailable', 'amenities', 'region',
       'city', 'neighborhood', 'address', 'approximateLatitude',
-      'approximateLongitude', 'publicAddressEnabled',
+      'approximateLongitude', 'publicAddressEnabled', 'contactPhone',
     ];
 
     for (const field of allowedFields) {
@@ -424,10 +440,118 @@ export const getOwnerContact = async (req: AuthRequest, res: Response, next: Nex
     });
 
     sendSuccess(res, {
-      phone: property.owner.phone,
+      phone: property.contactPhone,
       telegram: property.owner.telegram || null,
       instagram: property.owner.instagram || null,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createRentalRequest = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id: propertyId } = req.params;
+    const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+    if (message.length < 10 || message.length > 2000) {
+      throw new ApiError(400, 'Message must be between 10 and 2000 characters');
+    }
+
+    const property = await prisma.property.findFirst({
+      where: { id: propertyId, listingStatus: 'PUBLISHED', expiresAt: { gt: new Date() } },
+    });
+    if (!property) throw new ApiError(404, 'Property not found');
+    if (property.ownerId === req.user!.id) throw new ApiError(400, 'You cannot request your own property');
+
+    const existing = await prisma.rentalRequest.findFirst({
+      where: { propertyId, renterId: req.user!.id, status: 'PENDING' },
+    });
+    if (existing) throw new ApiError(409, 'You already have a pending request for this property');
+
+    const request = await prisma.$transaction(async tx => {
+      const created = await tx.rentalRequest.create({
+        data: { propertyId, renterId: req.user!.id, message },
+        include: { renter: { select: { id: true, fullName: true, phone: true, email: true } }, property: { select: { id: true, title: true } } },
+      });
+      await tx.notification.create({
+        data: {
+          userId: property.ownerId,
+          type: 'RENTAL_REQUEST_RECEIVED',
+          title: 'New rental request',
+          message: `${req.user!.fullName} sent a rental request for "${property.title}".`,
+          data: { rentalRequestId: created.id, propertyId },
+        },
+      });
+      return created;
+    });
+
+    sendSuccess(res, request, 'Rental request sent', 201);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getMyRentalRequests = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const requests = await prisma.rentalRequest.findMany({
+      where: { renterId: req.user!.id },
+      include: { property: { select: { id: true, title: true, slug: true, city: true, listingStatus: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    sendSuccess(res, requests);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getOwnerRentalRequests = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const requests = await prisma.rentalRequest.findMany({
+      where: { property: { ownerId: req.user!.id } },
+      include: {
+        renter: { select: { id: true, fullName: true, phone: true, email: true } },
+        property: { select: { id: true, title: true, slug: true, city: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    sendSuccess(res, requests);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const respondToRentalRequest = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { decision } = req.body as { decision?: string };
+    if (!['ACCEPTED', 'REJECTED'].includes(decision || '')) throw new ApiError(400, 'Choose accept or reject');
+
+    const request = await prisma.rentalRequest.findUnique({
+      where: { id },
+      include: { property: { select: { ownerId: true, title: true } } },
+    });
+    if (!request) throw new ApiError(404, 'Rental request not found');
+    if (request.property.ownerId !== req.user!.id) throw new ApiError(403, 'You can only manage requests for your properties');
+    if (request.status !== 'PENDING') throw new ApiError(409, 'This rental request has already been reviewed');
+
+    const updated = await prisma.$transaction(async tx => {
+      const changed = await tx.rentalRequest.updateMany({
+        where: { id, status: 'PENDING', property: { ownerId: req.user!.id } },
+        data: { status: decision as 'ACCEPTED' | 'REJECTED', responseMessage: typeof req.body.message === 'string' ? req.body.message.trim() : null, reviewedAt: new Date() },
+      });
+      if (changed.count !== 1) throw new ApiError(409, 'This rental request has already been reviewed');
+      await tx.notification.create({
+        data: {
+          userId: request.renterId,
+          type: 'RENTAL_REQUEST_UPDATED',
+          title: `Rental request ${decision === 'ACCEPTED' ? 'accepted' : 'rejected'}`,
+          message: `Your request for "${request.property.title}" was ${decision === 'ACCEPTED' ? 'accepted' : 'rejected'}.`,
+          data: { rentalRequestId: id, propertyId: request.propertyId, status: decision },
+        },
+      });
+      return tx.rentalRequest.findUnique({ where: { id } });
+    });
+    sendSuccess(res, updated, 'Rental request updated');
   } catch (error) {
     next(error);
   }
@@ -471,11 +595,12 @@ export const uploadPropertyImages = async (req: AuthRequest, res: Response, next
 
     // Get package photo limit if payment exists
     const payment = await prisma.payment.findFirst({
-      where: { propertyId: id, paymentStatus: { in: ['VERIFIED', 'SUBMITTED', 'UNDER_REVIEW'] } },
+      where: { propertyId: id },
+      orderBy: { createdAt: 'desc' },
       include: { package: true },
     });
 
-    const maxPhotos = payment?.package.maximumPhotos || 1;
+    const maxPhotos = payment?.package.maximumPhotos || 12;
     const currentCount = property.images.length;
 
     if (!req.files || !Array.isArray(req.files)) {
@@ -498,28 +623,40 @@ export const uploadPropertyImages = async (req: AuthRequest, res: Response, next
         throw new ApiError(400, `File ${file.originalname} is not an image`);
       }
 
-      // Upload to Cloudinary
-      const result = await new Promise<any>((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          {
-            folder: `ethiorent/properties/${id}`,
-            transformation: [
-              { width: 1200, height: 900, crop: 'limit', quality: 'auto:good', fetch_format: 'auto' },
-            ],
-            resource_type: 'image',
-          },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-          }
-        ).end(file.buffer);
-      });
+      const fileType = imageFileTypes[file.mimetype];
+      if (!fileType) throw new ApiError(400, 'Photos must be JPG, PNG, or WebP images');
+
+      let imageUrl: string;
+      let storageKey: string;
+      try {
+        const result = await new Promise<any>((resolve, reject) => {
+          cloudinary.uploader.upload_stream(
+            {
+              folder: `ethiorent/properties/${id}`,
+              transformation: [
+                { width: 1200, height: 900, crop: 'limit', quality: 'auto:good', fetch_format: 'auto' },
+              ],
+              resource_type: 'image',
+            },
+            (error, result) => error ? reject(error) : resolve(result)
+          ).end(file.buffer);
+        });
+        imageUrl = result.secure_url;
+        storageKey = result.public_id;
+      } catch (error: any) {
+        const filename = `${randomUUID()}${fileType.extension}`;
+        await mkdir(path.join(propertyImageDirectory, id), { recursive: true });
+        await writeFile(path.join(propertyImageDirectory, id, filename), file.buffer, { flag: 'wx', mode: 0o600 });
+        imageUrl = `/api/properties/${id}/images/local/${filename}`;
+        storageKey = `local:${filename}`;
+        console.warn('Property photo stored on private local disk because Cloudinary upload failed:', error.http_code || error.name || 'upload error');
+      }
 
       const image = await prisma.propertyImage.create({
         data: {
           propertyId: id,
-          imageUrl: result.secure_url,
-          storageKey: result.public_id,
+          imageUrl,
+          storageKey,
           displayOrder: currentCount + i,
           isCover: currentCount === 0 && i === 0, // First image is cover if no existing images
           altText: property.title,
@@ -530,6 +667,29 @@ export const uploadPropertyImages = async (req: AuthRequest, res: Response, next
     }
 
     sendSuccess(res, uploadedImages, 'Images uploaded successfully', 201);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getLocalPropertyImage = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id, filename } = req.params;
+    if (!/^[0-9a-f-]{36}\.(jpg|png|webp)$/i.test(filename)) throw new ApiError(404, 'Image not found');
+
+    const image = await prisma.propertyImage.findFirst({
+      where: { propertyId: id, storageKey: `local:${filename}` },
+      include: { property: { select: { ownerId: true, listingStatus: true } } },
+    });
+    if (!image) throw new ApiError(404, 'Image not found');
+    if (image.property.listingStatus !== 'PUBLISHED' && req.user?.role !== 'ADMIN' && req.user?.id !== image.property.ownerId) {
+      throw new ApiError(404, 'Image not found');
+    }
+
+    const fileType = Object.values(imageFileTypes).find(type => filename.endsWith(type.extension));
+    if (!fileType) throw new ApiError(404, 'Image not found');
+    const imageBuffer = await readFile(path.join(propertyImageDirectory, id, filename));
+    res.type(fileType.contentType).set('Cache-Control', 'private, max-age=300').send(imageBuffer);
   } catch (error) {
     next(error);
   }
@@ -552,8 +712,13 @@ export const deletePropertyImage = async (req: AuthRequest, res: Response, next:
       throw new ApiError(403, 'Access denied');
     }
 
-    // Delete from Cloudinary
-    if (image.storageKey) {
+    if (image.storageKey?.startsWith('local:')) {
+      try {
+        await unlink(path.join(propertyImageDirectory, id, image.storageKey.slice('local:'.length)));
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    } else if (image.storageKey) {
       try {
         await cloudinary.uploader.destroy(image.storageKey);
       } catch (e) {

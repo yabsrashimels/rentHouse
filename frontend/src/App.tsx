@@ -28,6 +28,7 @@ import OwnerProfile from './pages/dashboard/OwnerProfile'
 import FavoritesPage from './pages/dashboard/FavoritesPage'
 import PackageSelection from './pages/dashboard/PackageSelection'
 import PaymentPage from './pages/dashboard/PaymentPage'
+import RentalRequestsPage from './pages/dashboard/RentalRequestsPage'
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
@@ -36,6 +37,7 @@ import AdminPayments from './pages/admin/AdminPayments'
 import AdminUsers from './pages/admin/AdminUsers'
 import AdminPackages from './pages/admin/AdminPackages'
 import AdminAuditLogs from './pages/admin/AdminAuditLogs'
+import AdminRentalRequests from './pages/admin/AdminRentalRequests'
 
 function DashboardLayout() {
   return <Outlet />
@@ -105,7 +107,7 @@ function AppRoutes() {
 
         {/* Owner dashboard */}
         <Route path="/dashboard" element={
-          <ProtectedRoute roles={['OWNER', 'ADMIN']}>
+              <ProtectedRoute>
             <DashboardLayout />
           </ProtectedRoute>
         }>
@@ -115,7 +117,8 @@ function AppRoutes() {
           <Route path="listings/:id/edit" element={<EditListing />} />
           <Route path="listings/:id/package" element={<PackageSelection />} />
           <Route path="listings/:id/payment" element={<PaymentPage />} />
-          <Route path="payments" element={<OwnerPayments />} />
+            <Route path="rental-requests" element={<RentalRequestsPage />} />
+            <Route path="payments" element={<OwnerPayments />} />
           <Route path="profile" element={<OwnerProfile />} />
           <Route path="favorites" element={<FavoritesPage />} />
         </Route>
@@ -129,6 +132,7 @@ function AppRoutes() {
           <Route index element={<AdminDashboard />} />
           <Route path="properties" element={<AdminProperties />} />
           <Route path="payments" element={<AdminPayments />} />
+          <Route path="rental-requests" element={<AdminRentalRequests />} />
           <Route path="users" element={<AdminUsers />} />
           <Route path="packages" element={<AdminPackages />} />
           <Route path="audit-logs" element={<AdminAuditLogs />} />
@@ -149,7 +153,6 @@ function AppRoutes() {
     </BrowserRouter>
   )
 }
-
 export default function App() {
   return (
     <AuthProvider>

@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowRight, BadgeCheck, Building2, CircleDollarSign, Clo
 import toast from 'react-hot-toast'
 import { adminService } from '../../services'
 import StatusBadge from '../../components/StatusBadge'
+import { getRealtimeSocket } from '../../services/realtime'
 
 interface AdminDashboardData {
 	stats: Record<string, number | string>
@@ -14,11 +15,31 @@ interface AdminDashboardData {
 export default function AdminDashboard() {
 	const [data, setData] = useState<AdminDashboardData | null>(null)
 	const [loading, setLoading] = useState(true)
-	useEffect(() => { adminService.getDashboard().then(setData).catch(() => toast.error('Could not load administration statistics')).finally(() => setLoading(false)) }, [])
+	useEffect(() => {
+		const loadDashboard = () => adminService.getDashboard().then(setData).catch(() => toast.error('Could not load administration statistics')).finally(() => setLoading(false))
+		const socket = getRealtimeSocket()
+		const refresh = () => { void loadDashboard() }
+		const connected = () => {
+			socket.emit('admin:subscribe:payments')
+			refresh()
+		}
+		socket.on('connect', connected)
+		socket.on('payment:created', refresh)
+		socket.on('payment:updated', refresh)
+		socket.connect()
+		void loadDashboard()
+		const recoveryTimer = window.setInterval(refresh, 30000)
+		return () => {
+			socket.off('connect', connected)
+			socket.off('payment:created', refresh)
+			socket.off('payment:updated', refresh)
+			window.clearInterval(recoveryTimer)
+		}
+	}, [])
 
 	const stats = data?.stats
 	const cards = [
-		['Users', stats?.totalUsers, Users], ['Owners', stats?.totalOwners, Building2], ['Listings', stats?.totalListings, BadgeCheck], ['Published', stats?.publishedListings, Building2], ['Pending listings', stats?.pendingListings, Clock3], ['Pending payments', stats?.pendingPayments, AlertTriangle], ['Verified payments', stats?.verifiedPayments, BadgeCheck], ['Advertising revenue', `ETB ${Number(stats?.totalRevenue || 0).toLocaleString()}`, CircleDollarSign],
+		['Users', stats?.totalUsers, Users], ['Owners', stats?.totalOwners, Building2], ['Listings', stats?.totalListings, BadgeCheck], ['Published', stats?.publishedListings, Building2], ['Unpublished', stats?.unpublishedListings, Building2], ['Pending listings', stats?.pendingListings, Clock3], ['Pending payments', stats?.pendingPayments, AlertTriangle], ['Verified payments', stats?.verifiedPayments, BadgeCheck], ['Rental requests', stats?.rentalRequests, Users], ['Pending rental requests', stats?.pendingRentalRequests, Clock3], ['Advertising revenue', `ETB ${Number(stats?.totalRevenue || 0).toLocaleString()}`, CircleDollarSign],
 	] as const
 
 	return <div className="space-y-7"><header><p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Administration</p><h1 className="mt-1 text-3xl font-bold text-slate-900">Marketplace overview</h1><p className="mt-2 text-sm text-slate-600">Current activity across users, properties, and verified advertising payments.</p></header>

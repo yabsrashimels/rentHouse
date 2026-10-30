@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, BadgeCheck, CircleDollarSign, Clock3, Home, Plus, WalletCards } from 'lucide-react'
+import { ArrowRight, BadgeCheck, CircleDollarSign, Clock3, Home, MessageSquare, Plus, WalletCards } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { ownerService } from '../../services'
 import StatusBadge from '../../components/StatusBadge'
 import { useAuth } from '../../context/AuthContext'
+import { getRealtimeSocket } from '../../services/realtime'
 
 interface DashboardData {
 	stats: { totalListings: number; activeListings: number; pendingApproval: number; expiredListings: number; totalPaid: number }
@@ -17,7 +18,21 @@ export default function OwnerDashboard() {
 	const [loading, setLoading] = useState(true)
 
 	useEffect(() => {
-		ownerService.getDashboard().then(setData).catch(() => toast.error('Could not load your dashboard')).finally(() => setLoading(false))
+		const loadDashboard = () => ownerService.getDashboard().then(setData).catch(() => toast.error('Could not load your dashboard')).finally(() => setLoading(false))
+		const socket = getRealtimeSocket()
+		const refresh = () => { void loadDashboard() }
+		socket.on('connect', refresh)
+		socket.on('payment:updated', refresh)
+		socket.on('listing:updated', refresh)
+		socket.connect()
+		void loadDashboard()
+		const recoveryTimer = window.setInterval(refresh, 30000)
+		return () => {
+			socket.off('connect', refresh)
+			socket.off('payment:updated', refresh)
+			socket.off('listing:updated', refresh)
+			window.clearInterval(recoveryTimer)
+		}
 	}, [])
 
 	const stats = data?.stats
@@ -31,13 +46,19 @@ export default function OwnerDashboard() {
 	return (
 		<div className="mx-auto max-w-7xl space-y-7">
 			<header className="flex flex-wrap items-end justify-between gap-4">
-				<div><p className="text-xs font-bold uppercase tracking-wider text-emerald-800">Owner workspace</p><h1 className="mt-1 text-3xl font-bold text-slate-900">Welcome, {user?.fullName?.split(' ')[0]}</h1><p className="mt-2 text-sm text-slate-600">A clear view of your properties and advertising activity.</p></div>
-				<Link to="/dashboard/listings/new" className="inline-flex items-center gap-2 rounded-lg bg-emerald-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"><Plus size={17} />Add a listing</Link>
+				<div>
+					<a href='/'>
+						<p className="text-base font-bold uppercase tracking-wider text-emerald-800 ">Owner workspace</p></a>
+				    <h1 className="mt-1 text-3xl font-bold text-slate-900">Welcome, {user?.fullName?.split(' ')[0]}</h1>
+				<p className="mt-2 text-sm text-slate-600">A clear view of your properties and advertising activity.</p></div>
+				<Link to="/dashboard/listings/new" className="inline-flex items-center gap-2 rounded-lg bg-emerald-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
+				<Plus size={17} />Add a listing</Link>
 			</header>
 
 			<section aria-label="Listing statistics" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
 				{cards.map(({ label, value, icon: Icon, color }) => <article key={label} className="flex items-center gap-4 border border-slate-200 bg-white p-4 shadow-sm"><span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg ${color}`}><Icon size={20} /></span><div><p className="text-xs font-medium text-slate-500">{label}</p><p className="mt-1 text-xl font-bold text-slate-900">{loading ? '...' : value}</p></div></article>)}
 			</section>
+			<nav aria-label="Your marketplace activity" className="flex flex-wrap gap-3"><Link to="/dashboard/listings" className="border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">My houses</Link><Link to="/dashboard/payments" className="border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Advertising payments</Link><Link to="/dashboard/rental-requests" className="inline-flex items-center gap-2 border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"><MessageSquare size={16} />Rental requests</Link></nav>
 
 			<div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
 				<section className="border border-slate-200 bg-white">

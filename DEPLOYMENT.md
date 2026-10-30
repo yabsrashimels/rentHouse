@@ -120,31 +120,37 @@ npx prisma migrate deploy
 
 ### Backend (.env)
 
-| Variable                | Description                                        | Required |
-| ----------------------- | -------------------------------------------------- | -------- |
-| `NODE_ENV`              | `development` or `production`                      | Yes      |
-| `PORT`                  | Server port (default: 5000)                        | Yes      |
-| `DATABASE_URL`          | PostgreSQL connection string                       | Yes      |
-| `JWT_SECRET`            | Secure random string for JWT signing               | Yes      |
-| `JWT_REFRESH_SECRET`    | Secure random string for refresh tokens            | Yes      |
-| `CLOUDINARY_CLOUD_NAME` | Your Cloudinary cloud name                         | Yes      |
-| `CLOUDINARY_API_KEY`    | Cloudinary API key                                 | Yes      |
-| `CLOUDINARY_API_SECRET` | Cloudinary API secret                              | Yes      |
-| `FRONTEND_URL`          | Your frontend domain (for CORS)                    | Yes      |
-| `COOKIE_DOMAIN`         | Shared parent domain for auth cookies              | Optional |
-| `COOKIE_SAME_SITE`      | `lax`, `strict`, or `none` (`none` requires HTTPS) | Optional |
-| `ADMIN_EMAIL`           | Initial admin account email                        | Yes      |
-| `ADMIN_PASSWORD`        | Initial admin account password                     | Yes      |
-| `SMTP_HOST`             | Email SMTP host                                    | Optional |
-| `SMTP_USER`             | Email SMTP username                                | Optional |
-| `SMTP_PASS`             | Email SMTP password / App password                 | Optional |
+| Variable                     | Description                                                                     | Required |
+| ---------------------------- | ------------------------------------------------------------------------------- | -------- |
+| `NODE_ENV`                   | `development` or `production`                                                   | Yes      |
+| `PORT`                       | Server port (default: 5000)                                                     | Yes      |
+| `DATABASE_URL`               | PostgreSQL connection string                                                    | Yes      |
+| `JWT_SECRET`                 | Secure random string for JWT signing                                            | Yes      |
+| `JWT_REFRESH_SECRET`         | Secure random string for refresh tokens                                         | Yes      |
+| `CLOUDINARY_CLOUD_NAME`      | Your Cloudinary cloud name                                                      | Yes      |
+| `CLOUDINARY_API_KEY`         | Cloudinary API key                                                              | Yes      |
+| `CLOUDINARY_API_SECRET`      | Cloudinary API secret                                                           | Yes      |
+| `PROPERTY_IMAGE_STORAGE_DIR` | Persistent directory for property-photo fallback when Cloudinary is unavailable | Optional |
+| `FRONTEND_URL`               | Your frontend domain (for CORS)                                                 | Yes      |
+| `COOKIE_DOMAIN`              | Shared parent domain for auth cookies                                           | Optional |
+| `COOKIE_SAME_SITE`           | `lax`, `strict`, or `none` (`none` requires HTTPS)                              | Optional |
+| `ADMIN_EMAIL`                | Initial admin account email                                                     | Yes      |
+| `ADMIN_PASSWORD`             | Initial admin account password                                                  | Yes      |
+| `SMTP_HOST`                  | Email SMTP host                                                                 | Optional |
+| `SMTP_USER`                  | Email SMTP username                                                             | Optional |
+| `SMTP_PASS`                  | Email SMTP password / App password                                              | Optional |
 
 ### Frontend (.env)
 
-| Variable               | Description         | Required         |
-| ---------------------- | ------------------- | ---------------- |
-| `VITE_API_URL`         | Backend API URL     | Yes (production) |
-| `VITE_GOOGLE_MAPS_KEY` | Google Maps API key | Optional         |
+| Variable               | Description                                                                           | Required         |
+| ---------------------- | ------------------------------------------------------------------------------------- | ---------------- |
+| `VITE_API_URL`         | Backend API URL                                                                       | Yes (production) |
+| `VITE_SOCKET_URL`      | Socket.IO server origin (defaults to the backend origin inferred from `VITE_API_URL`) | Optional         |
+| `VITE_GOOGLE_MAPS_KEY` | Google Maps API key                                                                   | Optional         |
+
+If Cloudinary is unavailable, property photos are stored under `backend/private_uploads/properties` by default. Configure `PROPERTY_IMAGE_STORAGE_DIR` to a persistent mounted volume in production; ephemeral container filesystems can lose locally stored photos on redeploy.
+
+The backend serves Socket.IO on the same port as the REST API. Production proxies and hosting platforms must allow WebSocket upgrades to `/socket.io`; when `VITE_API_URL` is set to the backend origin plus `/api`, the frontend infers the socket origin automatically. Set `VITE_SOCKET_URL` only when the socket endpoint is hosted at a different origin.
 
 ---
 

@@ -4,9 +4,9 @@ import {
   getProperties, getFeaturedProperties, getRecentProperties,
   getPropertyBySlug, createProperty, updateProperty, deleteProperty,
   getOwnerContact, markAsRented, uploadPropertyImages, deletePropertyImage,
-  reorderImages, reportProperty,
+  reorderImages, reportProperty, createRentalRequest, getLocalPropertyImage,
 } from '../controllers/property.controller';
-import { authenticate, optionalAuth, requireOwnerOrAdmin } from '../middleware/auth';
+import { authenticate, optionalAuth } from '../middleware/auth';
 import { contactRevealLimiter, uploadLimiter } from '../middleware/rateLimiter';
 
 const router = Router();
@@ -34,16 +34,18 @@ router.get('/:slug', optionalAuth, getPropertyBySlug);
 router.get('/:id/contact', authenticate, contactRevealLimiter, getOwnerContact);
 
 // Owner routes
-router.post('/', authenticate, requireOwnerOrAdmin, createProperty);
-router.patch('/:id', authenticate, requireOwnerOrAdmin, updateProperty);
-router.delete('/:id', authenticate, requireOwnerOrAdmin, deleteProperty);
-router.post('/:id/mark-rented', authenticate, requireOwnerOrAdmin, markAsRented);
+router.post('/', authenticate, createProperty);
+router.patch('/:id', authenticate, updateProperty);
+router.delete('/:id', authenticate, deleteProperty);
+router.post('/:id/mark-rented', authenticate, markAsRented);
+router.post('/:id/rental-requests', authenticate, createRentalRequest);
 
 // Image management
-router.post('/:id/images', authenticate, requireOwnerOrAdmin, uploadLimiter,
+router.get('/:id/images/local/:filename', optionalAuth, getLocalPropertyImage);
+router.post('/:id/images', authenticate, uploadLimiter,
   upload.array('images', 12), uploadPropertyImages);
-router.delete('/:id/images/:imageId', authenticate, requireOwnerOrAdmin, deletePropertyImage);
-router.patch('/:id/images/reorder', authenticate, requireOwnerOrAdmin, reorderImages);
+router.delete('/:id/images/:imageId', authenticate, deletePropertyImage);
+router.patch('/:id/images/reorder', authenticate, reorderImages);
 
 // Reporting
 router.post('/:id/report', optionalAuth, reportProperty);

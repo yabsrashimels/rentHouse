@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import {
   getAdminDashboard, getAdminProperties, approveProperty, rejectProperty,
-  suspendProperty, getAdminPayments, verifyPayment, rejectPayment,
+  suspendProperty, getAdminPayments,
   getAdminUsers, updateUserStatus, getAuditLogs, updatePackage,
-  getAdminReports, moveToModeration,
+  getAdminReports, moveToModeration, getAdminRentalRequests,
 } from '../controllers/admin.controller';
 import { authenticate, requireRole } from '../middleware/auth';
+import { acceptPayment, rejectPayment } from '../controllers/owner.controller';
 
 const router = Router();
 
@@ -23,7 +24,8 @@ router.post('/properties/:id/suspend', suspendProperty);
 
 // Payments
 router.get('/payments', getAdminPayments);
-router.post('/payments/:id/verify', verifyPayment);
+router.get('/rental-requests', getAdminRentalRequests);
+router.post('/payments/:id/verify', acceptPayment);
 router.post('/payments/:id/reject', rejectPayment);
 router.post('/payments/:id/review', moveToModeration);
 

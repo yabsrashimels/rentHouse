@@ -24,22 +24,25 @@ export const formatRelativeTime = (date: string | Date): string => {
 
 export const getStatusLabel = (status: string): string => {
   const labels: Record<string, string> = {
+    // Payment
+    PENDING: 'Pending',
+    SUBMITTED: 'Pending Review',
+    UNDER_REVIEW: 'Under Review',
+    VERIFIED: 'Accepted',
+    REJECTED: 'Rejected',
+    CANCELLED: 'Cancelled',
+    REFUNDED: 'Refunded',
+    // Listing
     DRAFT: 'Draft',
     AWAITING_PAYMENT: 'Awaiting Payment',
-    PAYMENT_UNDER_REVIEW: 'Payment Under Review',
-    AWAITING_MODERATION: 'Awaiting Review',
+    PAYMENT_UNDER_REVIEW: 'Payment Pending',
+    AWAITING_MODERATION: 'Under Review',
     PUBLISHED: 'Published',
-    REJECTED: 'Rejected',
     EXPIRED: 'Expired',
     RENTED: 'Rented',
     SUSPENDED: 'Suspended',
-    PENDING: 'Pending',
-    SUBMITTED: 'Submitted',
-    UNDER_REVIEW: 'Under Review',
-    VERIFIED: 'Verified',
-    CANCELLED: 'Cancelled',
   }
-  return labels[status] || status
+  return labels[status] || status.replace(/_/g, ' ')
 }
 
 export const getPropertyTypeLabel = (type: string): string => {

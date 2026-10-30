@@ -6,6 +6,7 @@ import { ArrowLeft, ArrowRight, Check, ImagePlus, MapPin, X } from 'lucide-react
 import toast from 'react-hot-toast'
 import { z } from 'zod'
 import { propertyService } from '../../services'
+import { useAuth } from '../../context/AuthContext'
 
 const listingSchema = z.object({
 	title: z.string().trim().min(8, 'Use at least 8 characters').max(100),
@@ -19,6 +20,8 @@ const listingSchema = z.object({
 	parkingAvailable: z.boolean(),
 	waterAvailable: z.boolean(),
 	electricityAvailable: z.boolean(),
+	facilities: z.string(),
+	contactPhone: z.string().trim().min(9, 'Enter a contact phone number').max(15),
 	region: z.string().trim().min(2, 'Enter a region'),
 	city: z.string().trim().min(2, 'Enter a city'),
 	neighborhood: z.string().trim(),
@@ -31,8 +34,8 @@ type ListingForm = z.infer<typeof listingSchema>
 const steps = ['Basics', 'Details', 'Location', 'Review']
 const fieldsByStep: (keyof ListingForm)[][] = [
 	['title', 'description', 'propertyType', 'monthlyRent'],
-	['bedrooms', 'bathrooms', 'sizeSquareMeters', 'furnished', 'parkingAvailable', 'waterAvailable', 'electricityAvailable'],
-	['region', 'city', 'neighborhood', 'address'],
+	['bedrooms', 'bathrooms', 'sizeSquareMeters', 'furnished', 'parkingAvailable', 'waterAvailable', 'electricityAvailable', 'facilities'],
+	['region', 'city', 'neighborhood', 'address', 'contactPhone'],
 	[],
 ]
 
@@ -40,21 +43,24 @@ const initialValues: ListingForm = {
 	title: '', description: '', propertyType: 'APARTMENT', monthlyRent: 0,
 	bedrooms: 1, bathrooms: 1, sizeSquareMeters: '', furnished: false,
 	parkingAvailable: false, waterAvailable: true, electricityAvailable: true,
+	contactPhone: '',
+	facilities: '',
 	region: 'Addis Ababa', city: 'Addis Ababa', neighborhood: '', address: '',
 	publicAddressEnabled: false,
 }
 
 export default function CreateListing() {
 	const navigate = useNavigate()
+	const { user } = useAuth()
 	const [step, setStep] = useState(0)
-	const [coverImage, setCoverImage] = useState<File | null>(null)
-	const [previewUrl, setPreviewUrl] = useState('')
+	const [photos, setPhotos] = useState<File[]>([])
+	const [previewUrls, setPreviewUrls] = useState<string[]>([])
 	const [isSaving, setIsSaving] = useState(false)
 	const [savedPropertyId, setSavedPropertyId] = useState('')
 	const [uploadWarning, setUploadWarning] = useState('')
 	const { register, handleSubmit, trigger, watch, formState: { errors } } = useForm<ListingForm>({
 		resolver: zodResolver(listingSchema),
-		defaultValues: initialValues,
+		defaultValues: { ...initialValues, contactPhone: user?.phone || '' },
 	})
 
 	const formValues = watch()
@@ -64,19 +70,30 @@ export default function CreateListing() {
 		if (valid) setStep(current => Math.min(current + 1, steps.length - 1))
 	}
 
-	function chooseCover(file?: File) {
-		if (!file) return
-		if (!file.type.startsWith('image/')) {
-			toast.error('Choose an image file')
+	function choosePhotos(files: FileList | null) {
+		if (!files?.length) return
+		const selected = Array.from(files)
+		if (selected.length > 12) {
+			toast.error('Choose up to 12 property photos')
 			return
 		}
-		if (file.size > 5 * 1024 * 1024) {
-			toast.error('Image must be 5 MB or smaller')
+		if (selected.some(file => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
+			toast.error('Photos must be JPG, PNG, or WebP images')
 			return
 		}
-		if (previewUrl) URL.revokeObjectURL(previewUrl)
-		setCoverImage(file)
-		setPreviewUrl(URL.createObjectURL(file))
+		if (selected.some(file => file.size > 5 * 1024 * 1024)) {
+			toast.error('Each photo must be 5 MB or smaller')
+			return
+		}
+		previewUrls.forEach(URL.revokeObjectURL)
+		setPhotos(selected)
+		setPreviewUrls(selected.map(file => URL.createObjectURL(file)))
+	}
+
+	function removePhoto(index: number) {
+		URL.revokeObjectURL(previewUrls[index])
+		setPhotos(current => current.filter((_, photoIndex) => photoIndex !== index))
+		setPreviewUrls(current => current.filter((_, photoIndex) => photoIndex !== index))
 	}
 
 	async function saveDraft(values: ListingForm) {
@@ -89,15 +106,16 @@ export default function CreateListing() {
 				bedrooms: Number(values.bedrooms),
 				bathrooms: Number(values.bathrooms),
 				sizeSquareMeters: values.sizeSquareMeters ? Number(values.sizeSquareMeters) : undefined,
-				amenities: [],
+				amenities: values.facilities.split(',').map(value => value.trim()).filter(Boolean),
+				contactPhone: values.contactPhone || user?.phone,
 			})
 			setSavedPropertyId(property.id)
 
-			if (coverImage) {
+			if (photos.length) {
 				try {
-					await propertyService.uploadImages(property.id, [coverImage])
+					await propertyService.uploadImages(property.id, photos)
 				} catch {
-					setUploadWarning('Your draft was saved, but the cover image could not be uploaded. Check your storage configuration or continue without it.')
+					setUploadWarning('Your draft was saved, but the photos could not be uploaded. Please retry before choosing a package.')
 					return
 				}
 			}
@@ -159,27 +177,30 @@ export default function CreateListing() {
 								['waterAvailable', 'Water available'], ['electricityAvailable', 'Electricity available'],
 							] as const).map(([field, label]) => <label key={field} className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700"><input type="checkbox" className="h-4 w-4 accent-emerald-700" {...register(field)} />{label}</label>)}
 						</div>
+						<div><label className={labelClass} htmlFor="facilities">Facilities and amenities</label><input id="facilities" className={inputClass} placeholder="Balcony, generator, security, elevator" {...register('facilities')} /><p className="mt-1 text-xs text-slate-500">Separate facilities with commas.</p></div>
 					</section>}
 
 					{step === 2 && <section className="space-y-5">
-						<div><h2 className="text-xl font-semibold text-slate-900">Location and cover photo</h2><p className="mt-1 text-sm text-slate-500">Use an approximate location if you prefer to keep the exact address private.</p></div>
+						<div><h2 className="text-xl font-semibold text-slate-900">Location and house photos</h2><p className="mt-1 text-sm text-slate-500">Use an approximate location if you prefer to keep the exact address private.</p></div>
 						<div className="grid gap-4 sm:grid-cols-2">
 							<div><label className={labelClass} htmlFor="region">Region</label><input id="region" className={inputClass} placeholder="Addis Ababa" {...register('region')} />{errors.region && <p className="mt-1 text-sm text-red-600">{errors.region.message}</p>}</div>
 							<div><label className={labelClass} htmlFor="city">City</label><input id="city" className={inputClass} placeholder="Addis Ababa" {...register('city')} />{errors.city && <p className="mt-1 text-sm text-red-600">{errors.city.message}</p>}</div>
 							<div><label className={labelClass} htmlFor="neighborhood">Neighborhood</label><input id="neighborhood" className={inputClass} placeholder="Bole" {...register('neighborhood')} /></div>
 							<div><label className={labelClass} htmlFor="address">Street or address (optional)</label><input id="address" className={inputClass} placeholder="Kept private by default" {...register('address')} /></div>
+							<div><label className={labelClass} htmlFor="contactPhone">Contact phone for renters</label><input id="contactPhone" type="tel" className={inputClass} placeholder={user?.phone || '+251...'} {...register('contactPhone')} />{errors.contactPhone && <p className="mt-1 text-sm text-red-600">{errors.contactPhone.message}</p>}</div>
 						</div>
 						<label className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-sm text-slate-700"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-emerald-700" {...register('publicAddressEnabled')} /><span>Show the address publicly on the listing</span></label>
 						<div>
-							<span className={labelClass}>Cover photo <span className="font-normal text-slate-500">(optional, max 5 MB)</span></span>
-							{previewUrl ? <div className="relative mt-2 max-w-sm"><img src={previewUrl} alt="Selected property cover" className="aspect-video w-full rounded-lg object-cover" /><button type="button" aria-label="Remove cover photo" onClick={() => { URL.revokeObjectURL(previewUrl); setCoverImage(null); setPreviewUrl('') }} className="absolute right-2 top-2 rounded-full bg-white p-2 text-slate-700 shadow"><X size={16} /></button></div> : <label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 px-5 py-8 text-center hover:border-emerald-600"><ImagePlus className="mb-2 text-emerald-700" /><span className="text-sm font-medium text-slate-800">Choose a property photo</span><span className="mt-1 text-xs text-slate-500">JPG, PNG, or WebP</span><input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={event => chooseCover(event.target.files?.[0])} /></label>}
+							<span className={labelClass}>House photos <span className="font-normal text-slate-500">(optional, up to 12, max 5 MB each)</span></span>
+							<label className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 px-5 py-6 text-center hover:border-emerald-600"><ImagePlus className="mb-2 text-emerald-700" /><span className="text-sm font-medium text-slate-800">Choose house photos</span><span className="mt-1 text-xs text-slate-500">JPG, PNG, or WebP</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={event => choosePhotos(event.target.files)} /></label>
+							{previewUrls.length > 0 && <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">{previewUrls.map((url, index) => <div key={url} className="relative"><img src={url} alt={`Selected house photo ${index + 1}`} className="aspect-[4/3] w-full rounded-md object-cover" /><button type="button" aria-label={`Remove photo ${index + 1}`} onClick={() => removePhoto(index)} className="absolute right-2 top-2 rounded-full bg-white p-2 text-slate-700 shadow"><X size={15} /></button></div>)}</div>}
 						</div>
 					</section>}
 
 					{step === 3 && <section className="space-y-5">
 						<div><h2 className="text-xl font-semibold text-slate-900">Review your listing</h2><p className="mt-1 text-sm text-slate-500">Save as a draft, then choose an advertising package.</p></div>
 						<div className="overflow-hidden rounded-lg border border-slate-200">
-							{previewUrl && <img src={previewUrl} alt="Property cover preview" className="h-56 w-full object-cover" />}
+							{previewUrls[0] && <img src={previewUrls[0]} alt="Property cover preview" className="h-56 w-full object-cover" />}
 							<div className="space-y-3 p-5">
 								<div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-semibold text-slate-900">{formValues.title || 'Untitled property'}</h3><p className="mt-1 flex items-center gap-1 text-sm text-slate-500"><MapPin size={14} />{[formValues.neighborhood, formValues.city, formValues.region].filter(Boolean).join(', ')}</p></div><p className="font-bold text-emerald-800">ETB {Number(formValues.monthlyRent || 0).toLocaleString()} <span className="text-xs font-normal text-slate-500">/ month</span></p></div>
 								<p className="text-sm leading-6 text-slate-600">{formValues.description || 'Add a description to preview it here.'}</p>

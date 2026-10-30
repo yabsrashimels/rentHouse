@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { authService } from '../services'
+import { getRealtimeSocket } from '../services/realtime'
 
 export interface User {
   id: string
@@ -59,6 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await authService.logout()
     } finally {
+      getRealtimeSocket().disconnect()
       setUser(null)
     }
   }

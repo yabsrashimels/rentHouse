@@ -1,5 +1,14 @@
 import api from './api'
 
+async function getAuthorizedReceiptUrl(id: string) {
+  const metadata = await api.get(`/payments/${id}/receipt`)
+  if (metadata.data.data.local) {
+    const file = await api.get(`/payments/${id}/receipt/file`, { responseType: 'blob' })
+    return URL.createObjectURL(file.data)
+  }
+  return metadata.data.data.url as string
+}
+
 export interface LoginData {
   email: string
   password: string
@@ -93,7 +102,7 @@ export const propertyService = {
     const formData = new FormData()
     files.forEach(f => formData.append('images', f))
     const res = await api.post(`/properties/${propertyId}/images`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      headers: { 'Content-Type': undefined },
     })
     return res.data.data
   },
@@ -110,6 +119,11 @@ export const propertyService = {
   async report(propertyId: string, data: any) {
     const res = await api.post(`/properties/${propertyId}/report`, data)
     return res.data
+  },
+
+  async requestRental(propertyId: string, message: string) {
+    const res = await api.post(`/properties/${propertyId}/rental-requests`, { message })
+    return res.data.data
   },
 }
 
@@ -141,6 +155,20 @@ export const paymentService = {
     const res = await api.get('/payments/my')
     return res.data.data
   },
+
+  async acceptPayment(id: string, notes?: string) {
+    const res = await api.post(`/payments/${id}/accept`, { notes })
+    return res.data.data
+  },
+
+  async rejectPayment(id: string, reason: string) {
+    const res = await api.post(`/payments/${id}/reject`, { reason })
+    return res.data.data
+  },
+
+  async getReceiptUrl(id: string) {
+    return getAuthorizedReceiptUrl(id)
+  },
 }
 
 export const ownerService = {
@@ -154,6 +182,16 @@ export const ownerService = {
     return res.data.data
   },
 
+  async getRentalRequests() {
+    const res = await api.get('/owner/rental-requests')
+    return res.data.data
+  },
+
+  async respondToRentalRequest(id: string, decision: 'ACCEPTED' | 'REJECTED', message?: string) {
+    const res = await api.patch(`/owner/rental-requests/${id}`, { decision, message })
+    return res.data.data
+  },
+
   async updateProfile(data: any) {
     const formData = new FormData()
     Object.keys(data).forEach(key => {
@@ -164,6 +202,13 @@ export const ownerService = {
     const res = await api.patch('/owner/profile', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
+    return res.data.data
+  },
+}
+
+export const rentalRequestService = {
+  async getMine() {
+    const res = await api.get('/rental-requests/my')
     return res.data.data
   },
 }
@@ -224,6 +269,15 @@ export const adminService = {
   async getPayments(params?: Record<string, any>) {
     const res = await api.get('/admin/payments', { params })
     return res.data
+  },
+
+  async getRentalRequests(params?: Record<string, any>) {
+    const res = await api.get('/admin/rental-requests', { params })
+    return res.data
+  },
+
+  async getPaymentReceiptUrl(id: string) {
+    return getAuthorizedReceiptUrl(id)
   },
 
   async verifyPayment(id: string, notes?: string) {

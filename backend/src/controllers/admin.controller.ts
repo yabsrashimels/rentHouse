@@ -3,7 +3,9 @@ import prisma from '../config/database';
 import { ApiError } from '../utils/ApiError';
 import { sendSuccess, sendPaginatedSuccess } from '../utils/response';
 import { AuthRequest } from '../middleware/auth';
+import { emitToUser } from '../realtime';
 import { paginateQuery } from '../utils/helpers';
+import { acceptPayment as acceptReviewedPayment, rejectPayment as rejectReviewedPayment } from './owner.controller';
 
 export const getAdminDashboard = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -13,6 +15,7 @@ export const getAdminDashboard = async (req: AuthRequest, res: Response, next: N
       totalUsers, totalOwners, totalTenants, totalListings,
       publishedListings, pendingListings, expiredListings, rentedProperties,
       pendingPayments, verifiedPayments,
+      rentalRequests, pendingRentalRequests,
     ] = await Promise.all([
       prisma.user.count(),
       prisma.user.count({ where: { role: 'OWNER' } }),
@@ -24,6 +27,8 @@ export const getAdminDashboard = async (req: AuthRequest, res: Response, next: N
       prisma.property.count({ where: { listingStatus: 'RENTED' } }),
       prisma.payment.count({ where: { paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW'] } } }),
       prisma.payment.count({ where: { paymentStatus: 'VERIFIED' } }),
+      prisma.rentalRequest.count(),
+      prisma.rentalRequest.count({ where: { status: 'PENDING' } }),
     ]);
 
     const revenueResult = await prisma.payment.aggregate({
@@ -59,8 +64,10 @@ export const getAdminDashboard = async (req: AuthRequest, res: Response, next: N
     sendSuccess(res, {
       stats: {
         totalUsers, totalOwners, totalTenants, totalListings,
+        unpublishedListings: totalListings - publishedListings,
         publishedListings, pendingListings, expiredListings, rentedProperties,
         pendingPayments, verifiedPayments, totalRevenue,
+        rentalRequests, pendingRentalRequests,
       },
       recentPayments,
       overdueReviews,
@@ -124,48 +131,7 @@ export const approveProperty = async (req: AuthRequest, res: Response, next: Nex
       throw new ApiError(400, 'Property is not awaiting approval');
     }
 
-    const verifiedPayment = property.payments[0];
-    if (!verifiedPayment) {
-      throw new ApiError(400, 'Cannot approve: no verified payment found');
-    }
-
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + verifiedPayment.package.durationDays * 24 * 60 * 60 * 1000);
-    const featuredUntil = verifiedPayment.package.featuredPlacement ? expiresAt : null;
-
-    await prisma.property.update({
-      where: { id },
-      data: {
-        listingStatus: 'PUBLISHED',
-        publishedAt: now,
-        expiresAt,
-        featuredUntil: featuredUntil as any,
-      },
-    });
-
-    // Notify owner
-    await prisma.notification.create({
-      data: {
-        userId: property.ownerId,
-        type: 'LISTING_PUBLISHED',
-        title: '🎉 Your listing is now published!',
-        message: `Your property "${property.title}" is now live on EthioRent.`,
-        data: { propertyId: id },
-      },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: req.user!.id,
-        adminId: req.user!.id,
-        action: 'PROPERTY_APPROVED',
-        entityType: 'Property',
-        entityId: id,
-        ipAddress: req.ip,
-      },
-    });
-
-    sendSuccess(res, null, 'Property approved and published');
+    throw new ApiError(409, 'Listings are published only when an administrator accepts the associated advertising payment');
   } catch (error) {
     next(error);
   }
@@ -207,6 +173,8 @@ export const rejectProperty = async (req: AuthRequest, res: Response, next: Next
         ipAddress: req.ip,
       },
     });
+
+    emitToUser(property.ownerId, 'listing:updated', { propertyId: id, status: 'REJECTED' });
 
     sendSuccess(res, null, 'Property rejected');
   } catch (error) {
@@ -262,7 +230,12 @@ export const getAdminPayments = async (req: AuthRequest, res: Response, next: Ne
         orderBy: { createdAt: 'desc' },
         include: {
           user: { select: { id: true, fullName: true, email: true, phone: true } },
-          property: { select: { id: true, title: true, city: true, slug: true } },
+          property: {
+            select: {
+              id: true, title: true, city: true, slug: true,
+              images: { orderBy: { displayOrder: 'asc' } },
+            },
+          },
           package: true,
           verifiedBy: { select: { id: true, fullName: true } },
           verificationHistory: { orderBy: { createdAt: 'desc' } },
@@ -277,144 +250,33 @@ export const getAdminPayments = async (req: AuthRequest, res: Response, next: Ne
   }
 };
 
-export const verifyPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+export const getAdminRentalRequests = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { id } = req.params;
-    const { notes } = req.body;
-
-    const payment = await prisma.payment.findUnique({
-      where: { id },
-      include: { property: true, package: true },
-    });
-
-    if (!payment) throw new ApiError(404, 'Payment not found');
-    if (!['SUBMITTED', 'UNDER_REVIEW'].includes(payment.paymentStatus)) {
-      throw new ApiError(400, 'Payment cannot be verified in its current state');
-    }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.payment.update({
-        where: { id },
-        data: {
-          paymentStatus: 'VERIFIED',
-          verifiedById: req.user!.id,
-          verifiedAt: new Date(),
-          notes: notes || null,
+    const { page = '1', limit = '20', status } = req.query as Record<string, string>;
+    const { skip, take, page: p, limit: l } = paginateQuery(parseInt(page), parseInt(limit));
+    const where: any = status ? { status } : {};
+    const [requests, total] = await Promise.all([
+      prisma.rentalRequest.findMany({
+        where, skip, take, orderBy: { createdAt: 'desc' },
+        include: {
+          renter: { select: { id: true, fullName: true, email: true, phone: true } },
+          property: { select: { id: true, title: true, slug: true, city: true, owner: { select: { id: true, fullName: true, phone: true, email: true } } } },
         },
-      });
-
-      await tx.paymentVerificationHistory.create({
-        data: {
-          paymentId: id,
-          adminId: req.user!.id,
-          action: 'VERIFIED',
-          reason: notes || null,
-        },
-      });
-
-      await tx.property.update({
-        where: { id: payment.propertyId },
-        data: { listingStatus: 'AWAITING_MODERATION' },
-      });
-
-      await tx.notification.create({
-        data: {
-          userId: payment.userId,
-          type: 'PAYMENT_VERIFIED',
-          title: '✅ Payment Verified!',
-          message: `Your payment of ETB ${payment.amountInETB} has been verified. Your listing will be published within 3 hours after review.`,
-          data: { paymentId: id, propertyId: payment.propertyId },
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorId: req.user!.id,
-          adminId: req.user!.id,
-          action: 'PAYMENT_VERIFIED',
-          entityType: 'Payment',
-          entityId: id,
-          relevantMetadata: { propertyId: payment.propertyId, amount: payment.amountInETB },
-          ipAddress: req.ip,
-        },
-      });
-    });
-
-    sendSuccess(res, null, 'Payment verified successfully');
+      }),
+      prisma.rentalRequest.count({ where }),
+    ]);
+    sendPaginatedSuccess(res, requests, total, p, l);
   } catch (error) {
     next(error);
   }
 };
 
+export const verifyPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  return acceptReviewedPayment(req, res, next);
+};
+
 export const rejectPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
-
-    if (!reason) throw new ApiError(400, 'Rejection reason is required');
-
-    const payment = await prisma.payment.findUnique({
-      where: { id },
-      include: { property: true },
-    });
-
-    if (!payment) throw new ApiError(404, 'Payment not found');
-    if (!['SUBMITTED', 'UNDER_REVIEW'].includes(payment.paymentStatus)) {
-      throw new ApiError(400, 'Payment cannot be rejected in its current state');
-    }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.payment.update({
-        where: { id },
-        data: {
-          paymentStatus: 'REJECTED',
-          rejectionReason: reason,
-          verifiedById: req.user!.id,
-          verifiedAt: new Date(),
-        },
-      });
-
-      await tx.paymentVerificationHistory.create({
-        data: {
-          paymentId: id,
-          adminId: req.user!.id,
-          action: 'REJECTED',
-          reason,
-        },
-      });
-
-      await tx.property.update({
-        where: { id: payment.propertyId },
-        data: { listingStatus: 'AWAITING_PAYMENT' },
-      });
-
-      await tx.notification.create({
-        data: {
-          userId: payment.userId,
-          type: 'PAYMENT_REJECTED',
-          title: 'Payment Rejected',
-          message: `Your payment for "${payment.property.title}" was rejected. Reason: ${reason}. Please resubmit with correct information.`,
-          data: { paymentId: id, propertyId: payment.propertyId, reason },
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorId: req.user!.id,
-          adminId: req.user!.id,
-          action: 'PAYMENT_REJECTED',
-          entityType: 'Payment',
-          entityId: id,
-          relevantMetadata: { reason },
-          ipAddress: req.ip,
-        },
-      });
-    });
-
-    sendSuccess(res, null, 'Payment rejected');
-  } catch (error) {
-    next(error);
-  }
+  return rejectReviewedPayment(req, res, next);
 };
 
 export const getAdminUsers = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -585,10 +447,11 @@ export const moveToModeration = async (req: AuthRequest, res: Response, next: Ne
 
     if (!payment) throw new ApiError(404, 'Payment not found');
 
-    await prisma.payment.update({
-      where: { id },
+    const updated = await prisma.payment.updateMany({
+      where: { id, paymentStatus: 'SUBMITTED' },
       data: { paymentStatus: 'UNDER_REVIEW' },
     });
+    if (updated.count !== 1) throw new ApiError(409, 'Only newly submitted payments can be moved to review');
 
     sendSuccess(res, null, 'Payment moved to under review');
   } catch (error) {

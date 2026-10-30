@@ -258,6 +258,7 @@ async function main() {
         data: {
           ...propData,
           ownerId: demoOwner.id,
+          contactPhone: demoOwner.phone,
         },
       });
     }
