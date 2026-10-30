@@ -31,7 +31,7 @@ export default function Navbar() {
           ) : (
             <Link onClick={() => setMenuOpen(false)} to="/login" className="text-primary-800">Login / Sign up</Link>
           )}
-          <Link onClick={() => setMenuOpen(false)} to={user ? '/dashboard/listings/new' : `/login?redirect=${encodeURIComponent('/dashboard/listings/new')}`} className="inline-flex items-center justify-center gap-2 rounded-md bg-primary-800 px-4 py-2.5 font-semibold text-white hover:bg-primary-700"><HousePlus size={16} />Post a house</Link>
+          <Link onClick={() => setMenuOpen(false)} to={user ? '/host' : `/login?redirect=${encodeURIComponent('/host')}`} className="inline-flex items-center justify-center gap-2 rounded-md bg-primary-800 px-4 py-2.5 font-semibold text-white hover:bg-primary-700"><HousePlus size={16} />Post a house</Link>
         </nav>
       </div>
     </header>

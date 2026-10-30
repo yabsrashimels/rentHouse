@@ -209,6 +209,33 @@ export const getMe = async (req: AuthRequest, res: Response, next: NextFunction)
   }
 };
 
+export const becomeHost = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (req.user!.role === 'TENANT') {
+      await prisma.user.update({
+        where: { id: req.user!.id },
+        data: { role: 'OWNER' },
+      });
+    } else if (req.user!.role !== 'OWNER' && req.user!.role !== 'ADMIN') {
+      throw new ApiError(403, 'This account cannot host properties');
+    }
+
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: req.user!.id },
+      select: {
+        id: true, fullName: true, email: true, phone: true,
+        role: true, accountStatus: true, telegram: true,
+        instagram: true, profileImageUrl: true, emailVerifiedAt: true,
+        createdAt: true,
+      },
+    });
+
+    sendSuccess(res, { user }, 'Host account activated');
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const refreshToken = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const token = req.cookies?.refreshToken;

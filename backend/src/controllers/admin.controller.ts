@@ -281,12 +281,12 @@ export const rejectPayment = async (req: AuthRequest, res: Response, next: NextF
 
 export const getAdminUsers = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { page = '1', limit = '20', search, role, status } = req.query as Record<string, string>;
+    const { page = '1', limit = '50', search, role, status } = req.query as Record<string, string>;
     const { skip, take, page: p, limit: l } = paginateQuery(parseInt(page), parseInt(limit));
 
     const where: any = {};
-    if (role) where.role = role;
-    if (status) where.accountStatus = status;
+    if (role) where.role = role as any;
+    if (status) where.accountStatus = status as any;
     if (search) {
       where.OR = [
         { fullName: { contains: search, mode: 'insensitive' } },
@@ -302,15 +302,177 @@ export const getAdminUsers = async (req: AuthRequest, res: Response, next: NextF
         take,
         orderBy: { createdAt: 'desc' },
         select: {
-          id: true, fullName: true, email: true, phone: true,
-          role: true, accountStatus: true, createdAt: true,
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          role: true,
+          accountStatus: true,
+          balance: true,
+          createdAt: true,
+          properties: {
+            select: {
+              id: true,
+              title: true,
+              monthlyRent: true,
+              listingStatus: true,
+            },
+          },
+          payments: {
+            take: 10,
+            orderBy: { createdAt: 'desc' },
+            select: {
+              id: true,
+              amountInETB: true,
+              paymentStatus: true,
+              paymentMethod: true,
+              transactionReference: true,
+              createdAt: true,
+              package: { select: { name: true } },
+              property: { select: { title: true } },
+            },
+          },
           _count: { select: { properties: true, payments: true } },
         },
       }),
       prisma.user.count({ where }),
     ]);
 
-    sendPaginatedSuccess(res, users, total, p, l);
+    const formattedUsers = users.map(u => {
+      const username = u.email ? u.email.split('@')[0] : u.fullName.toLowerCase().replace(/\s+/g, '_');
+      const balanceNum = Number(u.balance || 0);
+
+      // Total earnings for user from their rented properties + balance
+      const rentedRent = u.properties
+        .filter(prop => prop.listingStatus === 'RENTED')
+        .reduce((sum, prop) => sum + Number(prop.monthlyRent), 0);
+      const totalEarnings = rentedRent + balanceNum;
+
+      // Total paid by this user for advertising
+      const totalPaid = u.payments
+        .filter(pay => pay.paymentStatus === 'VERIFIED')
+        .reduce((sum, pay) => sum + Number(pay.amountInETB), 0);
+
+      return {
+        id: u.id,
+        fullName: u.fullName,
+        username,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        accountStatus: u.accountStatus,
+        balance: balanceNum,
+        totalEarnings,
+        totalPaid,
+        propertiesCount: u._count.properties,
+        paymentsCount: u._count.payments,
+        createdAt: u.createdAt,
+        transactionHistory: u.payments.map(pay => ({
+          id: pay.id,
+          amountInETB: Number(pay.amountInETB),
+          paymentStatus: pay.paymentStatus,
+          paymentMethod: pay.paymentMethod,
+          transactionReference: pay.transactionReference,
+          packageName: pay.package?.name || 'Package',
+          propertyTitle: pay.property?.title || 'Listing',
+          createdAt: pay.createdAt,
+        })),
+      };
+    });
+
+    sendPaginatedSuccess(res, formattedUsers, total, p, l);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getUserTransactions = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        role: true,
+        accountStatus: true,
+        balance: true,
+        createdAt: true,
+      },
+    });
+    if (!user) throw new ApiError(404, 'User not found');
+
+    const payments = await prisma.payment.findMany({
+      where: { userId: id },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        package: { select: { name: true, priceInETB: true } },
+        property: { select: { id: true, title: true, city: true, monthlyRent: true } },
+      },
+    });
+
+    const username = user.email ? user.email.split('@')[0] : user.fullName.toLowerCase().replace(/\s+/g, '_');
+
+    sendSuccess(res, {
+      user: {
+        ...user,
+        username,
+        balance: Number(user.balance || 0),
+      },
+      payments: payments.map(pay => ({
+        id: pay.id,
+        amountInETB: Number(pay.amountInETB),
+        paymentStatus: pay.paymentStatus,
+        paymentMethod: pay.paymentMethod,
+        transactionReference: pay.transactionReference,
+        packageName: pay.package?.name || 'Advertising',
+        propertyTitle: pay.property?.title || 'Property',
+        createdAt: pay.createdAt,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateUserBalance = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { amount, reason } = req.body;
+    if (typeof amount !== 'number' || isNaN(amount)) {
+      throw new ApiError(400, 'Valid numeric amount is required');
+    }
+    if (!reason || typeof reason !== 'string') {
+      throw new ApiError(400, 'Reason for balance adjustment is required');
+    }
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) throw new ApiError(404, 'User not found');
+
+    const newBalance = Math.max(0, Number(user.balance) + amount);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id },
+        data: { balance: newBalance },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user!.id,
+          adminId: req.user!.id,
+          action: 'USER_BALANCE_ADJUSTED',
+          entityType: 'User',
+          entityId: id,
+          relevantMetadata: { previousBalance: Number(user.balance), adjustedAmount: amount, newBalance, reason },
+          ipAddress: req.ip,
+        },
+      });
+    });
+
+    sendSuccess(res, { balance: newBalance }, 'User balance updated successfully');
   } catch (error) {
     next(error);
   }

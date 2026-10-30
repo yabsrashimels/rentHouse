@@ -3,6 +3,17 @@ export const formatETB = (amount: number | string): string => {
   return `ETB ${num.toLocaleString('en-ET', { minimumFractionDigits: 0 })}`
 }
 
+export const formatBirr = (amount: number | string): string => {
+  const num = typeof amount === 'string' ? parseFloat(amount) : amount
+  return `${num.toLocaleString('en-ET', { minimumFractionDigits: 0 })} ብር`
+}
+
+export const formatETBWithBirr = (amount: number | string): string => {
+  const num = typeof amount === 'string' ? parseFloat(amount) : amount
+  const formatted = num.toLocaleString('en-ET', { minimumFractionDigits: 0 })
+  return `ETB ${formatted} (${formatted} ብር)`
+}
+
 export const formatDate = (date: string | Date): string => {
   return new Date(date).toLocaleDateString('en-ET', {
     year: 'numeric',

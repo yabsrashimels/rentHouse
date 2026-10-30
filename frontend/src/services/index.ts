@@ -42,6 +42,11 @@ export const authService = {
     return res.data.data.user
   },
 
+  async becomeHost() {
+    const res = await api.post('/auth/become-host')
+    return res.data.data.user
+  },
+
   async forgotPassword(email: string) {
     const res = await api.post('/auth/forgot-password', { email })
     return res.data
@@ -293,6 +298,16 @@ export const adminService = {
   async getUsers(params?: Record<string, any>) {
     const res = await api.get('/admin/users', { params })
     return res.data
+  },
+
+  async getUserTransactions(id: string) {
+    const res = await api.get(`/admin/users/${id}/transactions`)
+    return res.data.data
+  },
+
+  async updateUserBalance(id: string, amount: number, reason: string) {
+    const res = await api.patch(`/admin/users/${id}/balance`, { amount, reason })
+    return res.data.data
   },
 
   async updateUserStatus(id: string, status: string, reason?: string) {

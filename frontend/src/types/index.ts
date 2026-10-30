@@ -55,11 +55,72 @@ export interface User {
   phone: string
   role: 'TENANT' | 'OWNER' | 'ADMIN'
   accountStatus: string
+  balance?: number
+  totalEarnings?: number
+  username?: string
+  totalPaid?: number
   telegram?: string
   instagram?: string
   profileImageUrl?: string
   emailVerifiedAt?: string
   createdAt: string
+}
+
+export interface RevenueOverview {
+  totalPlatformRevenue: number
+  totalMoneyEarnedByAllUsers: number
+  totalPendingPayments: number
+  pendingPaymentsCount: number
+  totalApprovedPayments: number
+  approvedPaymentsCount: number
+  totalRejectedPayments: number
+  rejectedPaymentsCount: number
+  totalUsers: number
+  totalOwners: number
+  totalTenants: number
+  totalListings: number
+  publishedListings: number
+  rentedProperties: number
+  rentalRequests: number
+  pendingRentalRequests: number
+}
+
+export interface RevenueAnalytics {
+  monthlyRevenue: Array<{ month: string; revenue: number; count: number }>
+  revenueByPackage: Array<{ packageName: string; revenue: number; count: number }>
+  revenueByMethod: Array<{ method: string; revenue: number; count: number }>
+  financialMetrics: {
+    averageTransactionValue: number
+    approvalRatePercentage: number
+    pendingRatePercentage: number
+    activeRentalsMonthlyVolume: number
+  }
+}
+
+export interface DashboardUser {
+  id: string
+  fullName: string
+  username: string
+  email: string
+  phone: string
+  role: 'TENANT' | 'OWNER' | 'ADMIN'
+  accountStatus: string
+  balance: number
+  totalEarnings: number
+  totalPaid: number
+  propertiesCount: number
+  paymentsCount: number
+  createdAt: string
+  transactionHistory: Array<{
+    id: string
+    amountInETB: number
+    paymentStatus: string
+    paymentMethod?: string
+    transactionReference?: string
+    packageName: string
+    propertyTitle: string
+    createdAt: string
+  }>
 }
 
 export interface Payment {

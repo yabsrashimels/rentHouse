@@ -21,6 +21,7 @@ interface AuthContextType {
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
   register: (data: any) => Promise<void>
+  becomeHost: () => Promise<void>
   logout: () => Promise<void>
   refreshUser: () => Promise<void>
 }
@@ -56,6 +57,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(userData)
   }
 
+  const becomeHost = useCallback(async () => {
+    const userData = await authService.becomeHost()
+    setUser(userData)
+  }, [])
+
   const logout = async () => {
     try {
       await authService.logout()
@@ -72,6 +78,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: !!user,
       login,
       register,
+      becomeHost,
       logout,
       refreshUser,
     }}>

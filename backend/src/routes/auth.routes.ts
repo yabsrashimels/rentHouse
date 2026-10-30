@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import {
   register, login, logout, getMe, refreshToken,
-  forgotPassword, resetPassword,
+  forgotPassword, resetPassword, becomeHost,
 } from '../controllers/auth.controller';
 import { authenticate } from '../middleware/auth';
 import { authLimiter, passwordResetLimiter } from '../middleware/rateLimiter';
@@ -47,6 +47,7 @@ router.post('/register', authLimiter, validateRequest(registerSchema), register)
 router.post('/login', authLimiter, validateRequest(loginSchema), login);
 router.post('/logout', authenticate, logout);
 router.get('/me', authenticate, getMe);
+router.post('/become-host', authenticate, becomeHost);
 router.post('/refresh', refreshToken);
 router.post('/forgot-password', passwordResetLimiter, validateRequest(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validateRequest(resetPasswordSchema), resetPassword);

@@ -212,9 +212,9 @@ const getReviewablePayment = async (id: string, req: AuthRequest) => {
 
   if (!payment) throw new ApiError(404, 'Payment not found');
 
-  // SECURITY: Only ADMIN can accept or reject payments. No self-approval.
-  if (req.user!.role !== 'ADMIN') {
-    throw new ApiError(403, 'Only administrators can accept or reject payments');
+  // SECURITY: Only ADMIN or OWNER can accept or reject payments
+  if (req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER') {
+    throw new ApiError(403, 'Only administrators and owners can accept or reject payments');
   }
 
   if (payment.userId !== payment.property.ownerId) {
@@ -363,8 +363,8 @@ export const getPaymentReceipt = async (req: AuthRequest, res: Response, next: N
     });
 
     if (!payment) throw new ApiError(404, 'Payment not found');
-    if (req.user!.role !== 'ADMIN' && payment.property.ownerId !== req.user!.id) {
-      throw new ApiError(403, 'You can only view receipts for your own properties');
+    if (req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER' && payment.property.ownerId !== req.user!.id) {
+      throw new ApiError(403, 'You can only view receipts for your own properties or as a platform manager');
     }
     if (!payment.receiptStorageKey || !payment.receiptUrl) throw new ApiError(404, 'Receipt not found');
 
@@ -398,8 +398,8 @@ export const getLocalPaymentReceipt = async (req: AuthRequest, res: Response, ne
     });
 
     if (!payment) throw new ApiError(404, 'Payment not found');
-    if (req.user!.role !== 'ADMIN' && payment.property.ownerId !== req.user!.id) {
-      throw new ApiError(403, 'You can only view receipts for your own properties');
+    if (req.user!.role !== 'ADMIN' && req.user!.role !== 'OWNER' && payment.property.ownerId !== req.user!.id) {
+      throw new ApiError(403, 'You can only view receipts for your own properties or as a platform manager');
     }
 
     const filename = payment.receiptStorageKey?.startsWith('local:')
@@ -435,24 +435,146 @@ export const getLocalPaymentReceipt = async (req: AuthRequest, res: Response, ne
 export const getOwnerDashboard = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const userId = req.user!.id;
+    const now = new Date();
 
     const [
-      totalListings, activeListings, pendingApproval,
-      expiredListings, payments,
+      // Personal stats
+      myTotalListings, myActiveListings, myPendingApproval,
+      myExpiredListings, myPayments,
+      // Platform-wide stats
+      totalUsers, totalOwners, totalTenants, totalListings,
+      publishedListings, pendingListings, expiredListings, rentedProperties,
+      pendingPaymentsCount, verifiedPaymentsCount, rejectedPaymentsCount,
+      rentalRequests, pendingRentalRequests,
+      rentedPropsAgg, userBalancesAgg,
+      pendingPaymentsAgg, rejectedPaymentsAgg, verifiedPaymentsAgg,
     ] = await Promise.all([
+      // Personal
       prisma.property.count({ where: { ownerId: userId } }),
-      prisma.property.count({ where: { ownerId: userId, listingStatus: 'PUBLISHED', expiresAt: { gt: new Date() } } }),
+      prisma.property.count({ where: { ownerId: userId, listingStatus: 'PUBLISHED', expiresAt: { gt: now } } }),
       prisma.property.count({ where: { ownerId: userId, listingStatus: { in: ['AWAITING_MODERATION', 'PAYMENT_UNDER_REVIEW'] } } }),
       prisma.property.count({ where: { ownerId: userId, listingStatus: 'EXPIRED' } }),
       prisma.payment.findMany({
         where: { userId, paymentStatus: 'VERIFIED' },
         select: { amountInETB: true },
       }),
+      // Platform
+      prisma.user.count(),
+      prisma.user.count({ where: { role: 'OWNER' } }),
+      prisma.user.count({ where: { role: 'TENANT' } }),
+      prisma.property.count(),
+      prisma.property.count({ where: { listingStatus: 'PUBLISHED', expiresAt: { gt: now } } }),
+      prisma.property.count({ where: { listingStatus: { in: ['AWAITING_MODERATION', 'PAYMENT_UNDER_REVIEW'] } } }),
+      prisma.property.count({ where: { OR: [{ listingStatus: 'EXPIRED' }, { expiresAt: { lt: now }, listingStatus: 'PUBLISHED' }] } }),
+      prisma.property.count({ where: { listingStatus: 'RENTED' } }),
+      prisma.payment.count({ where: { paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW', 'PENDING'] } } }),
+      prisma.payment.count({ where: { paymentStatus: 'VERIFIED' } }),
+      prisma.payment.count({ where: { paymentStatus: 'REJECTED' } }),
+      prisma.rentalRequest.count(),
+      prisma.rentalRequest.count({ where: { status: 'PENDING' } }),
+      prisma.property.aggregate({
+        where: { listingStatus: 'RENTED' },
+        _sum: { monthlyRent: true },
+      }),
+      prisma.user.aggregate({
+        _sum: { balance: true },
+      }),
+      prisma.payment.aggregate({
+        where: { paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW', 'PENDING'] } },
+        _sum: { amountInETB: true },
+      }),
+      prisma.payment.aggregate({
+        where: { paymentStatus: 'REJECTED' },
+        _sum: { amountInETB: true },
+      }),
+      prisma.payment.aggregate({
+        where: { paymentStatus: 'VERIFIED' },
+        _sum: { amountInETB: true },
+      }),
     ]);
 
-    const totalPaid = payments.reduce((sum, p) => sum + parseFloat(p.amountInETB.toString()), 0);
+    const myTotalPaid = myPayments.reduce((sum, p) => sum + parseFloat(p.amountInETB.toString()), 0);
 
-    const recentPayments = await prisma.payment.findMany({
+    const totalRevenue = verifiedPaymentsAgg._sum.amountInETB?.toString() || '0';
+    const totalPlatformRevenue = Number(totalRevenue);
+    const totalApprovedPayments = totalPlatformRevenue;
+    const totalPendingPayments = Number(pendingPaymentsAgg._sum.amountInETB || 0);
+    const totalRejectedPayments = Number(rejectedPaymentsAgg._sum.amountInETB || 0);
+
+    const totalRentedRent = Number(rentedPropsAgg._sum.monthlyRent || 0);
+    const totalUserBalances = Number(userBalancesAgg._sum.balance || 0);
+    const totalMoneyEarnedByAllUsers = totalRentedRent + totalUserBalances;
+
+    // Monthly revenue trend (last 6-12 months)
+    const verifiedPaymentsList = await prisma.payment.findMany({
+      where: { paymentStatus: 'VERIFIED' },
+      select: { amountInETB: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const monthlyMap: Record<string, { month: string; revenue: number; count: number }> = {};
+    for (const p of verifiedPaymentsList) {
+      const d = new Date(p.createdAt);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+      if (!monthlyMap[key]) monthlyMap[key] = { month: label, revenue: 0, count: 0 };
+      monthlyMap[key].revenue += Number(p.amountInETB);
+      monthlyMap[key].count += 1;
+    }
+    const monthlyRevenue = Object.values(monthlyMap);
+
+    // Revenue by package
+    const packageGroups = await prisma.payment.groupBy({
+      by: ['packageId'],
+      where: { paymentStatus: 'VERIFIED' },
+      _sum: { amountInETB: true },
+      _count: true,
+    });
+    const packageList = await prisma.listingPackage.findMany({ select: { id: true, name: true, priceInETB: true } });
+    const packageNameMap = new Map(packageList.map(pk => [pk.id, pk.name]));
+    const revenueByPackage = packageGroups.map(pg => ({
+      packageName: packageNameMap.get(pg.packageId) || 'Standard Package',
+      revenue: Number(pg._sum.amountInETB || 0),
+      count: pg._count,
+    }));
+
+    // Revenue by payment method
+    const methodGroups = await prisma.payment.groupBy({
+      by: ['paymentMethod'],
+      where: { paymentStatus: 'VERIFIED' },
+      _sum: { amountInETB: true },
+      _count: true,
+    });
+    const revenueByMethod = methodGroups.map(mg => ({
+      method: mg.paymentMethod || 'OTHER',
+      revenue: Number(mg._sum.amountInETB || 0),
+      count: mg._count,
+    }));
+
+    // Platform-wide pending requests needing verification
+    const pendingRequests = await prisma.payment.findMany({
+      where: { paymentStatus: { in: ['SUBMITTED', 'UNDER_REVIEW', 'PENDING'] } },
+      take: 20,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, fullName: true, email: true, phone: true } },
+        property: { select: { id: true, title: true, city: true, slug: true } },
+        package: { select: { name: true, priceInETB: true } },
+      },
+    });
+
+    // Platform-wide recent transactions
+    const recentTransactions = await prisma.payment.findMany({
+      take: 20,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, fullName: true, email: true, phone: true } },
+        property: { select: { id: true, title: true, city: true, slug: true } },
+        package: { select: { name: true, priceInETB: true } },
+      },
+    });
+
+    // Personal recent payments
+    const myRecentPayments = await prisma.payment.findMany({
       where: { userId },
       take: 5,
       orderBy: { createdAt: 'desc' },
@@ -460,8 +582,69 @@ export const getOwnerDashboard = async (req: AuthRequest, res: Response, next: N
     });
 
     sendSuccess(res, {
-      stats: { totalListings, activeListings, pendingApproval, expiredListings, totalPaid },
-      recentPayments,
+      overview: {
+        totalPlatformRevenue,
+        totalMoneyEarnedByAllUsers,
+        totalPendingPayments,
+        pendingPaymentsCount,
+        totalApprovedPayments,
+        approvedPaymentsCount: verifiedPaymentsCount,
+        totalRejectedPayments,
+        rejectedPaymentsCount,
+        totalUsers,
+        totalOwners,
+        totalTenants,
+        totalListings,
+        publishedListings,
+        rentedProperties,
+        rentalRequests,
+        pendingRentalRequests,
+      },
+      stats: {
+        // Backwards compatible fields
+        totalListings: myTotalListings,
+        activeListings: myActiveListings,
+        pendingApproval: myPendingApproval,
+        expiredListings: myExpiredListings,
+        totalPaid: myTotalPaid,
+        // Revenue & Platform overview fields
+        totalPlatformRevenue,
+        totalMoneyEarnedByAllUsers,
+        totalPendingPayments,
+        pendingPaymentsCount,
+        totalApprovedPayments,
+        approvedPaymentsCount: verifiedPaymentsCount,
+        totalRejectedPayments,
+        rejectedPaymentsCount,
+        totalUsers,
+        totalOwners,
+        totalTenants,
+        platformListings: totalListings,
+        publishedListings,
+        rentedProperties,
+      },
+      personal: {
+        totalListings: myTotalListings,
+        activeListings: myActiveListings,
+        pendingApproval: myPendingApproval,
+        expiredListings: myExpiredListings,
+        totalPaid: myTotalPaid,
+        recentPayments: myRecentPayments,
+      },
+      analytics: {
+        monthlyRevenue,
+        revenueByPackage,
+        revenueByMethod,
+        financialMetrics: {
+          averageTransactionValue: verifiedPaymentsCount > 0 ? Math.round(totalPlatformRevenue / verifiedPaymentsCount) : 0,
+          approvalRatePercentage: (verifiedPaymentsCount + rejectedPaymentsCount) > 0 ? Math.round((verifiedPaymentsCount / (verifiedPaymentsCount + rejectedPaymentsCount)) * 100) : 100,
+          pendingRatePercentage: (verifiedPaymentsCount + pendingPaymentsCount) > 0 ? Math.round((pendingPaymentsCount / (verifiedPaymentsCount + pendingPaymentsCount)) * 100) : 0,
+          activeRentalsMonthlyVolume: totalRentedRent,
+        },
+      },
+      pendingRequests,
+      recentTransactions,
+      recentPayments: myRecentPayments,
     });
   } catch (error) {
     next(error);

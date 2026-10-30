@@ -29,6 +29,8 @@ import FavoritesPage from './pages/dashboard/FavoritesPage'
 import PackageSelection from './pages/dashboard/PackageSelection'
 import PaymentPage from './pages/dashboard/PaymentPage'
 import RentalRequestsPage from './pages/dashboard/RentalRequestsPage'
+import TenantDashboard from './pages/dashboard/TenantDashboard'
+import HostActivationPage from './pages/HostActivationPage'
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
@@ -41,6 +43,15 @@ import AdminRentalRequests from './pages/admin/AdminRentalRequests'
 
 function DashboardLayout() {
   return <Outlet />
+}
+
+function DashboardIndex() {
+  const { user } = useAuth()
+  return user?.role === 'TENANT' ? <TenantDashboard /> : <OwnerDashboard />
+}
+
+function OwnerRoute({ children }: { children: React.ReactNode }) {
+  return <ProtectedRoute roles={['OWNER', 'ADMIN']}>{children}</ProtectedRoute>
 }
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
@@ -104,23 +115,24 @@ function AppRoutes() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/host" element={<ProtectedRoute><HostActivationPage /></ProtectedRoute>} />
 
-        {/* Owner dashboard */}
+        {/* Dashboard index is available to every signed-in user. */}
         <Route path="/dashboard" element={
-              <ProtectedRoute>
+          <ProtectedRoute>
             <DashboardLayout />
           </ProtectedRoute>
         }>
-          <Route index element={<OwnerDashboard />} />
-          <Route path="listings" element={<MyListings />} />
-          <Route path="listings/new" element={<CreateListing />} />
-          <Route path="listings/:id/edit" element={<EditListing />} />
-          <Route path="listings/:id/package" element={<PackageSelection />} />
-          <Route path="listings/:id/payment" element={<PaymentPage />} />
-            <Route path="rental-requests" element={<RentalRequestsPage />} />
-            <Route path="payments" element={<OwnerPayments />} />
-          <Route path="profile" element={<OwnerProfile />} />
-          <Route path="favorites" element={<FavoritesPage />} />
+          <Route index element={<DashboardIndex />} />
+          <Route path="listings" element={<OwnerRoute><MyListings /></OwnerRoute>} />
+          <Route path="listings/new" element={<OwnerRoute><CreateListing /></OwnerRoute>} />
+          <Route path="listings/:id/edit" element={<OwnerRoute><EditListing /></OwnerRoute>} />
+          <Route path="listings/:id/package" element={<OwnerRoute><PackageSelection /></OwnerRoute>} />
+          <Route path="listings/:id/payment" element={<OwnerRoute><PaymentPage /></OwnerRoute>} />
+          <Route path="rental-requests" element={<OwnerRoute><RentalRequestsPage /></OwnerRoute>} />
+          <Route path="payments" element={<OwnerRoute><OwnerPayments /></OwnerRoute>} />
+          <Route path="profile" element={<OwnerRoute><OwnerProfile /></OwnerRoute>} />
+          <Route path="favorites" element={<OwnerRoute><FavoritesPage /></OwnerRoute>} />
         </Route>
 
         {/* Admin dashboard */}
