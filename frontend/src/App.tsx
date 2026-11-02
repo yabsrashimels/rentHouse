@@ -47,11 +47,13 @@ function DashboardLayout() {
 
 function DashboardIndex() {
   const { user } = useAuth()
-  return user?.role === 'TENANT' ? <TenantDashboard /> : <OwnerDashboard />
+  if (user?.role === 'ADMIN') return <Navigate to="/admin" replace />
+  if (user?.role === 'OWNER') return <OwnerDashboard />
+  return <TenantDashboard />
 }
 
 function OwnerRoute({ children }: { children: React.ReactNode }) {
-  return <ProtectedRoute roles={['OWNER', 'ADMIN']}>{children}</ProtectedRoute>
+  return <ProtectedRoute roles={['OWNER']}>{children}</ProtectedRoute>
 }
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
@@ -73,7 +75,7 @@ function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?
   }
 
   if (roles && !roles.includes(user.role)) {
-    return <Navigate to="/" replace />
+    return <Navigate to={user.role === 'ADMIN' ? '/admin' : '/dashboard'} replace />
   }
 
   return <>{children}</>
@@ -91,7 +93,7 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user || user.role !== 'ADMIN') {
-    return <Navigate to="/" replace />
+    return <Navigate to={user?.role === 'OWNER' || user?.role === 'TENANT' ? '/dashboard' : '/'} replace />
   }
 
   return <>{children}</>
@@ -132,7 +134,7 @@ function AppRoutes() {
           <Route path="rental-requests" element={<OwnerRoute><RentalRequestsPage /></OwnerRoute>} />
           <Route path="payments" element={<OwnerRoute><OwnerPayments /></OwnerRoute>} />
           <Route path="profile" element={<OwnerRoute><OwnerProfile /></OwnerRoute>} />
-          <Route path="favorites" element={<OwnerRoute><FavoritesPage /></OwnerRoute>} />
+          <Route path="favorites" element={<ProtectedRoute><FavoritesPage /></ProtectedRoute>} />
         </Route>
 
         {/* Admin dashboard */}

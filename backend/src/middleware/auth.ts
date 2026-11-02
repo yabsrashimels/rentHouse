@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import prisma from '../config/database';
 import config from '../config';
 import { ApiError } from '../utils/ApiError';
+import { DESIGNATED_OWNER_EMAIL } from '../controllers/auth.controller';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -124,5 +125,22 @@ export const requireOwnerOrAdmin = (req: AuthRequest, res: Response, next: NextF
   if (!req.user) {
     return next(new ApiError(401, 'Authentication required'));
   }
+
+  if (req.user.role !== 'OWNER' && req.user.role !== 'ADMIN') {
+    return next(new ApiError(403, 'Only owners or admins can perform this action'));
+  }
+
+  next();
+};
+
+export const requireDesignatedOwner = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (!req.user) {
+    return next(new ApiError(401, 'Authentication required'));
+  }
+
+  if (req.user.email.toLowerCase() !== DESIGNATED_OWNER_EMAIL.toLowerCase()) {
+    return next(new ApiError(403, 'Only the designated owner can manage owner or admin roles'));
+  }
+
   next();
 };

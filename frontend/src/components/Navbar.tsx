@@ -25,7 +25,9 @@ export default function Navbar() {
           <NavLink onClick={() => setMenuOpen(false)} to="/contact" className="text-secondary-text hover:text-primary-800">Contact</NavLink>
           {user ? (
             <>
-              <Link onClick={() => setMenuOpen(false)} to={user.role === 'ADMIN' ? '/admin' : '/dashboard'} className="text-primary-800">Dashboard</Link>
+              <Link onClick={() => setMenuOpen(false)} to={user.role === 'ADMIN' ? '/admin' : '/dashboard'} className="text-primary-800">
+                {user.role === 'ADMIN' ? 'Admin console' : user.role === 'OWNER' ? 'Owner dashboard' : 'My account'}
+              </Link>
               <button type="button" onClick={handleLogout} className="text-secondary-text hover:text-primary-800">Sign out</button>
             </>
           ) : (

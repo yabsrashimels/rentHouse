@@ -20,9 +20,10 @@ export default function LoginPage() {
 	async function submit(values: LoginValues) {
 		setSubmitting(true)
 		try {
-			await login(values.email, values.password)
+			const user = await login(values.email, values.password)
 			const redirect = params.get('redirect')
-			navigate(redirect?.startsWith('/') && !redirect.startsWith('//') ? redirect : '/dashboard', { replace: true })
+			const roleHome = user.role === 'ADMIN' ? '/admin' : '/dashboard'
+			navigate(redirect?.startsWith('/') && !redirect.startsWith('//') ? redirect : roleHome, { replace: true })
 		} catch (error: any) { toast.error(error.response?.data?.message || 'Unable to sign in') }
 		finally { setSubmitting(false) }
 	}

@@ -6,8 +6,9 @@ import {
   getAdminReports, moveToModeration, getAdminRentalRequests,
   getUserTransactions, updateUserBalance,
 } from '../controllers/admin.controller';
-import { authenticate, requireRole } from '../middleware/auth';
+import { authenticate, requireDesignatedOwner, requireRole } from '../middleware/auth';
 import { acceptPayment, rejectPayment } from '../controllers/owner.controller';
+import { updateUserRole } from '../controllers/admin.controller';
 
 const router = Router();
 const adminOnly = requireRole('ADMIN');
@@ -34,6 +35,7 @@ router.post('/payments/:id/review', adminOnly, moveToModeration);
 // The owner dashboard uses these user-management endpoints.
 router.get('/users', dashboardUserAccess, getAdminUsers);
 router.get('/users/:id/transactions', adminOnly, getUserTransactions);
+router.patch('/users/:id/role', authenticate, requireDesignatedOwner, updateUserRole);
 router.patch('/users/:id/status', dashboardUserAccess, updateUserStatus);
 router.patch('/users/:id/balance', dashboardUserAccess, updateUserBalance);
 

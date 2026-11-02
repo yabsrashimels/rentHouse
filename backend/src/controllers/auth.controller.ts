@@ -8,6 +8,50 @@ import { ApiError } from '../utils/ApiError';
 import { sendSuccess } from '../utils/response';
 import { AuthRequest } from '../middleware/auth';
 
+export const DESIGNATED_OWNER_EMAIL = 'shimelsyabsra565@gmail.com';
+export const DESIGNATED_OWNER_PASSWORD_HASH = '$2a$12$EgVFwzmQsjGgJtKFSCeys.hbh3QuxHZsOrLdDZ9Y9ZeBoEa/IHgMW';
+
+export const isDesignatedOwner = (email?: string | null) => {
+  return email?.toLowerCase() === DESIGNATED_OWNER_EMAIL.toLowerCase();
+};
+
+export const ensureSingleOwnerAccount = async () => {
+  const existingDesignatedOwner = await prisma.user.findUnique({
+    where: { email: DESIGNATED_OWNER_EMAIL },
+    select: { id: true, role: true, fullName: true, accountStatus: true },
+  });
+
+  if (!existingDesignatedOwner) {
+    await prisma.user.create({
+      data: {
+        fullName: 'Yabsra Shimels',
+        email: DESIGNATED_OWNER_EMAIL,
+        phone: '+251911111111',
+        passwordHash: DESIGNATED_OWNER_PASSWORD_HASH,
+        role: 'OWNER',
+        accountStatus: 'ACTIVE',
+      },
+    });
+  } else if (existingDesignatedOwner.role !== 'OWNER' || existingDesignatedOwner.accountStatus !== 'ACTIVE') {
+    await prisma.user.update({
+      where: { email: DESIGNATED_OWNER_EMAIL },
+      data: {
+        role: 'OWNER',
+        accountStatus: 'ACTIVE',
+        passwordHash: DESIGNATED_OWNER_PASSWORD_HASH,
+      },
+    });
+  }
+
+  await prisma.user.updateMany({
+    where: {
+      email: { not: DESIGNATED_OWNER_EMAIL },
+      role: 'OWNER',
+    },
+    data: { role: 'TENANT' },
+  });
+};
+
 const generateTokens = (userId: string, email: string, role: string) => {
   const accessToken = jwt.sign(
     { userId, email, role },
@@ -45,10 +89,10 @@ const setAuthCookies = (res: Response, accessToken: string, refreshToken: string
 
 export const register = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { fullName, email, phone, password, role = 'TENANT' } = req.body;
+    await ensureSingleOwnerAccount();
 
-    // Prevent public admin registration
-    const safeRole = role === 'ADMIN' ? 'TENANT' : role;
+    const { fullName, email, phone, password } = req.body;
+    const safeRole = 'TENANT';
 
     // Check if email exists
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -107,6 +151,8 @@ export const register = async (req: Request, res: Response, next: NextFunction) 
 
 export const login = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    await ensureSingleOwnerAccount();
+
     const { email, password } = req.body;
 
     const user = await prisma.user.findUnique({
@@ -211,16 +257,13 @@ export const getMe = async (req: AuthRequest, res: Response, next: NextFunction)
 
 export const becomeHost = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    if (req.user!.role === 'TENANT') {
-      await prisma.user.update({
-        where: { id: req.user!.id },
-        data: { role: 'OWNER' },
-      });
-    } else if (req.user!.role !== 'OWNER' && req.user!.role !== 'ADMIN') {
-      throw new ApiError(403, 'This account cannot host properties');
+    await ensureSingleOwnerAccount();
+
+    if (!isDesignatedOwner(req.user?.email)) {
+      throw new ApiError(403, 'Only the designated owner account may enable owner permissions.');
     }
 
-    const user = await prisma.user.findUniqueOrThrow({
+    const user = await prisma.user.findUnique({
       where: { id: req.user!.id },
       select: {
         id: true, fullName: true, email: true, phone: true,
@@ -230,7 +273,28 @@ export const becomeHost = async (req: AuthRequest, res: Response, next: NextFunc
       },
     });
 
-    sendSuccess(res, { user }, 'Host account activated');
+    if (!user) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    if (user.role !== 'OWNER') {
+      await prisma.user.update({
+        where: { id: req.user!.id },
+        data: { role: 'OWNER', passwordHash: DESIGNATED_OWNER_PASSWORD_HASH },
+      });
+    }
+
+    const updatedUser = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      select: {
+        id: true, fullName: true, email: true, phone: true,
+        role: true, accountStatus: true, telegram: true,
+        instagram: true, profileImageUrl: true, emailVerifiedAt: true,
+        createdAt: true,
+      },
+    });
+
+    sendSuccess(res, { user: updatedUser }, 'Host account activated');
   } catch (error) {
     next(error);
   }

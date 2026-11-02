@@ -478,6 +478,62 @@ export const updateUserBalance = async (req: AuthRequest, res: Response, next: N
   }
 };
 
+export const updateUserRole = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!role || !['TENANT', 'OWNER', 'ADMIN'].includes(role)) {
+      throw new ApiError(400, 'A valid role is required: TENANT, OWNER, or ADMIN');
+    }
+
+    const user = await prisma.user.findUnique({ where: { id } });
+    if (!user) throw new ApiError(404, 'User not found');
+
+    if (role === 'OWNER' || role === 'ADMIN') {
+      const actorEmail = req.user?.email?.toLowerCase();
+      if (actorEmail !== 'shimelsyabsra565@gmail.com') {
+        throw new ApiError(403, 'Only the designated owner can grant OWNER or ADMIN roles');
+      }
+    }
+
+    if (role === 'OWNER') {
+      const ownerCount = await prisma.user.count({ where: { role: 'OWNER' } });
+      if (ownerCount > 0 && user.role !== 'OWNER') {
+        throw new ApiError(409, 'Only one owner account is allowed. Reassign the current owner before creating another.');
+      }
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id },
+      data: { role },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        accountStatus: true,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user!.id,
+        adminId: req.user!.id,
+        action: 'USER_ROLE_UPDATED',
+        entityType: 'User',
+        entityId: id,
+        relevantMetadata: { previousRole: user.role, newRole: role },
+        ipAddress: req.ip,
+      },
+    });
+
+    sendSuccess(res, { user: updatedUser }, 'User role updated successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const updateUserStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;

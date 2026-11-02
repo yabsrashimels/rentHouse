@@ -19,7 +19,6 @@ export interface RegisterData {
   email: string
   phone: string
   password: string
-  role?: 'TENANT' | 'OWNER'
 }
 
 export const authService = {
